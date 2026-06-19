@@ -1,5 +1,39 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence, useInView, useMotionValue, useTransform } from 'framer-motion';
+import { SpotlightCard } from './components/SpotlightCard';
+import { SplashCursor } from './components/SplashCursor';
+import { DotField } from './components/DotField';
+import VariableProximity from './components/VariableProximity';
+import ShinyText from './components/ShinyText';
+import TrueFocus from './components/TrueFocus';
+import TextPressure from './components/TextPressure';
+import ScrollReveal from './components/ScrollReveal';
+import DecryptedText from './components/DecryptedText';
+import GradientText from './components/GradientText';
+import Shuffle from './components/Shuffle';
+import ScrollVelocity from './components/ScrollVelocity';
+import SplitText from './components/SplitText';
+import CountUp from './components/CountUp';
+import FuzzyText from './components/FuzzyText';
+import RotatingText from './components/RotatingText';
+import CurvedLoop from './components/CurvedLoop';
+import CircularText from './components/CircularText';
+import TextCursor from './components/TextCursor';
+import BlurText from './components/BlurText';
+import TextType from './components/TextType';
+import GlitchText from './components/GlitchText';
+import ScrambledText from './components/ScrambledText';
+import AuroraBackground from './components/AuroraBackground';
+import ScrollFloat from './components/ScrollFloat';
+import ASCIIText from './components/ASCIIText';
+import FallingText from './components/FallingText';
+import LaserFlow from './components/LaserFlow';
+import GlareHover from './components/GlareHover';
+import ClickSpark from './components/ClickSpark';
+import GradualBlur from './components/GradualBlur';
+import ShapeBlur from './components/ShapeBlur';
+import Strands from './components/Strands';
+import FluidGlass from './components/FluidGlass';
 import {
   UploadCloud, FileText, FileImage, FileBarChart,
   Send, BrainCircuit, Network, LayoutDashboard,
@@ -28,13 +62,23 @@ const mockChat = [
   }
 ];
 
+import BorderGlow from './components/BorderGlow';
+
 // --- COMPONENTS ---
 
-const GlassCard = ({ children, className = "" }) => (
-  <div className={`bg-white/10 backdrop-blur-lg border border-white/20 shadow-2xl rounded-2xl ${className}`}>
-    {children}
-  </div>
-);
+const GlassCard = ({ children, className = "", style = {} }) => {
+  const safeClassName = className.replace('overflow-hidden', '');
+  return (
+    <BorderGlow
+      backgroundColor="transparent"
+      borderRadius={16}
+      fillOpacity={0}
+      className={`bg-white/10 backdrop-blur-lg shadow-2xl rounded-2xl ${safeClassName}`}
+    >
+      {children}
+    </BorderGlow>
+  );
+};
 
 // --- ANIMATED DOT GRID BACKGROUND ---
 const DotGrid = () => {
@@ -169,7 +213,7 @@ const PipelineNode = ({ icon: Icon, label, color, delay, index }) => {
         initial={{ scale: 0, opacity: 0 }}
         animate={inView ? { scale: 1, opacity: 1 } : {}}
         transition={{ delay: delay, type: "spring", stiffness: 300, damping: 20 }}
-        className={`relative w-20 h-20 md:w-24 md:h-24 rounded-2xl border-2 flex items-center justify-center ${color} backdrop-blur-sm`}
+        className={`electric-border relative w-20 h-20 md:w-24 md:h-24 rounded-2xl border-2 flex items-center justify-center ${color} backdrop-blur-sm`}
       >
         {/* Pulse ring */}
         <motion.div
@@ -179,14 +223,14 @@ const PipelineNode = ({ icon: Icon, label, color, delay, index }) => {
         />
         <Icon size={32} className="relative z-10" />
       </motion.div>
-      <motion.span
+      <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={inView ? { opacity: 1, y: 0 } : {}}
         transition={{ delay: delay + 0.2 }}
         className="text-xs md:text-sm font-semibold text-storm-100/80 text-center"
       >
-        {label}
-      </motion.span>
+        <DecryptedText text={label} animateOn="hover" />
+      </motion.div>
     </div>
   );
 };
@@ -222,6 +266,9 @@ const LandingPage = ({ setView }) => {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [footerModal, setFooterModal] = useState(null); // 'privacy' | 'terms' | 'docs' | 'contact' | null
   const [copied, setCopied] = useState(false);
+
+  // For Variable Proximity
+  const containerRef = useRef(null);
 
   useEffect(() => {
     const handleScroll = () => setScrollY(window.scrollY);
@@ -341,8 +388,16 @@ const LandingPage = ({ setView }) => {
   return (
     <div className="landing-scroll relative bg-[#0f1923] overflow-x-hidden font-sans selection:bg-storm-300 selection:text-storm-900">
 
-      {/* Dot Grid Background */}
-      <DotGrid />
+      {/* Dot Field Background */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <DotField
+          glowColor="#0f1923"
+          gradientFrom="#6A89A7"
+          gradientTo="#88BDF2"
+          dotRadius={2.0}
+          dotSpacing={18}
+        />
+      </div>
 
       {/* Floating Ambient Orbs */}
       <FloatingOrb className="w-[500px] h-[500px] bg-storm-300/8 top-[-100px] left-[-150px]" delay={0} />
@@ -366,20 +421,20 @@ const LandingPage = ({ setView }) => {
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-storm-300 to-storm-500 flex items-center justify-center shadow-lg shadow-storm-300/20">
               <BrainCircuit size={20} className="text-white" />
             </div>
-            <span className="text-white font-bold text-lg tracking-tight hidden sm:inline">DocuMind</span>
+            <ShinyText text="DocuMind" disabled={false} speed={3} className="text-white font-bold text-lg tracking-tight hidden sm:inline" />
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setView('login')}
-              className="text-storm-100/70 hover:text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-white/5 transition-all"
+              className="electric-border text-storm-100/70 hover:text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-white/5 transition-all"
             >
-              Sign In
+              <ShinyText text="Sign In" disabled={false} speed={3} className="text-sm font-medium" />
             </button>
             <button
               onClick={() => setShowOnboarding(true)}
-              className="bg-storm-300 hover:bg-storm-100 text-[#0f1923] font-bold text-sm px-5 py-2.5 rounded-xl transition-all shadow-lg shadow-storm-300/20 hover:shadow-storm-300/40"
+              className="electric-border bg-storm-300 hover:bg-storm-100 text-[#0f1923] font-bold text-sm px-5 py-2.5 rounded-xl transition-all shadow-lg shadow-storm-300/20 hover:shadow-storm-300/40"
             >
-              Get Started
+              <ShinyText text="Get Started" disabled={false} speed={3} className="font-bold text-sm" color="#0f1923" shineColor="#ffffff" />
             </button>
           </div>
         </div>
@@ -400,56 +455,65 @@ const LandingPage = ({ setView }) => {
           >
             <Sparkles size={16} className="text-storm-300" />
             <span className="text-storm-100/90 text-xs font-bold tracking-[0.2em] uppercase">
-              Powered by Multi-Modal AI
+              <ShinyText text="Powered by Multi-Modal AI" disabled={false} speed={3} className="inline-block" color="#88BDF2" shineColor="#ffffff" />
             </span>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           </motion.div>
 
           {/* Main Headline */}
-          <motion.h1
+          <motion.div
+            ref={containerRef}
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.4, duration: 0.8 }}
             className="text-5xl sm:text-6xl md:text-7xl lg:text-8xl font-black text-white mb-8 tracking-tighter leading-[0.95]"
           >
-            Decode the{' '}
-            <br className="hidden sm:block" />
-            <span className="relative inline-block">
-              <span
-                className="animate-gradient-shift"
-                style={{
-                  background: 'linear-gradient(90deg, #88BDF2, #a8d8ff, #c084fc)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                  backgroundSize: '200% 200%',
-                }}
-              >
-                Unstructured.
-              </span>
-              {/* Underline glow */}
-              <motion.div
-                initial={{ scaleX: 0 }}
-                animate={{ scaleX: 1 }}
-                transition={{ delay: 1, duration: 0.8 }}
-                className="absolute -bottom-2 left-0 right-0 h-[3px] origin-left rounded-full"
-                style={{ background: 'linear-gradient(90deg, #88BDF2, #c084fc, transparent)' }}
+            <div className="flex flex-col items-center justify-center">
+              <VariableProximity
+                label="Decode the"
+                className="cursor-default"
+                fromFontVariationSettings="'wght' 400, 'opsz' 9"
+                toFontVariationSettings="'wght' 1000, 'opsz' 40"
+                containerRef={containerRef}
+                radius={120}
+                falloff="linear"
               />
-            </span>
-          </motion.h1>
+              <span className="relative inline-block mt-2">
+                <VariableProximity
+                  label="Unstructured."
+                  className="animate-gradient-shift cursor-default"
+                  style={{
+                    background: 'linear-gradient(90deg, #88BDF2, #a8d8ff, #c084fc)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    backgroundClip: 'text',
+                    backgroundSize: '200% 200%',
+                  }}
+                  fromFontVariationSettings="'wght' 400, 'opsz' 9"
+                  toFontVariationSettings="'wght' 1000, 'opsz' 40"
+                  containerRef={containerRef}
+                  radius={120}
+                  falloff="linear"
+                />
+              </span>
+            </div>
+          </motion.div>
 
           {/* Subheadline */}
-          <motion.p
+          <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.6 }}
-            className="text-lg md:text-xl text-storm-100/60 mb-12 leading-relaxed max-w-2xl font-medium"
+            className="mb-12 max-w-2xl text-storm-100/70 text-lg md:text-xl leading-relaxed"
           >
-            Upload any document—PDFs, scans, spreadsheets, images—and let our AI
-            build a{' '}
-            <span className="text-storm-300 font-semibold">living knowledge graph</span>{' '}
-            you can query in natural language.
-          </motion.p>
+            <BlurText
+              text="Upload any document and let our AI build a living knowledge graph you can query in natural language"
+              delay={30}
+              animateBy="words"
+              direction="top"
+              className="inline-block"
+            />
+          </motion.div>
 
           {/* CTA Buttons */}
           <motion.div
@@ -460,11 +524,11 @@ const LandingPage = ({ setView }) => {
           >
             <button
               onClick={() => setView('login')}
-              className="group relative inline-flex items-center justify-center gap-3 text-[#0f1923] hover:text-[#0f1923] font-extrabold text-lg px-10 py-5 rounded-2xl transition-all duration-300 shadow-[0_0_50px_rgba(136,189,242,0.25)] hover:shadow-[0_0_80px_rgba(136,189,242,0.45)] overflow-hidden"
+              className="electric-border group relative inline-flex items-center justify-center gap-3 text-[#0f1923] hover:text-[#0f1923] font-extrabold text-lg px-10 py-5 rounded-2xl transition-all duration-300 shadow-[0_0_50px_rgba(136,189,242,0.25)] hover:shadow-[0_0_80px_rgba(136,189,242,0.45)] overflow-hidden"
               style={{ background: 'linear-gradient(90deg, #88BDF2, #6ba3e0)' }}
             >
-              <span className="relative z-10 flex items-center gap-2">
-                Start Analyzing
+              <span className="relative z-10 flex items-center gap-2 font-black">
+                <SplitText text="Start Analyzing" className="text-[#0f1923] font-extrabold text-lg" delay={40} />
                 <ArrowRight size={22} className="group-hover:translate-x-1.5 transition-transform duration-300" />
               </span>
               <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/30 to-transparent z-0" />
@@ -477,7 +541,7 @@ const LandingPage = ({ setView }) => {
               <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center group-hover:bg-white/20 transition-colors">
                 <Play size={16} className="text-white ml-0.5" />
               </div>
-              Watch Demo
+              <ShinyText text="Watch Demo" disabled={false} speed={3} className="text-storm-100/70 group-hover:text-white font-semibold text-lg" />
             </button>
           </motion.div>
 
@@ -489,7 +553,13 @@ const LandingPage = ({ setView }) => {
             className="mt-12 flex items-center gap-2 text-storm-100/30 text-sm"
           >
             <Shield size={14} />
-            <span>SOC-2 Compliant · End-to-End Encrypted · No data retention</span>
+            <div className="flex items-center gap-2 flex-wrap justify-center">
+              <ShinyText text="SOC-2 Compliant" disabled={false} speed={3} color="#6A89A7" shineColor="#ffffff" />
+              <span className="text-storm-100/30">·</span>
+              <ShinyText text="End-to-End Encrypted" disabled={false} speed={4} color="#6A89A7" shineColor="#ffffff" />
+              <span className="text-storm-100/30">·</span>
+              <ShinyText text="No data retention" disabled={false} speed={5} color="#6A89A7" shineColor="#ffffff" />
+            </div>
           </motion.div>
         </div>
 
@@ -519,19 +589,16 @@ const LandingPage = ({ setView }) => {
             viewport={{ once: true, margin: "-80px" }}
             className="text-center mb-16"
           >
-            <span className="text-storm-300 text-sm font-bold tracking-[0.2em] uppercase mb-4 block">The Pipeline</span>
-            <h2 className="text-3xl md:text-5xl font-black text-white tracking-tight">
-              From Raw Documents to{' '}
-              <span
-                style={{
-                  background: 'linear-gradient(90deg, #34d399, #88BDF2)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
+            <span className="text-storm-300 text-sm font-bold tracking-[0.2em] uppercase mb-4 block">
+              <DecryptedText text="The Pipeline" speed={50} maxIterations={10} animateOn="view" />
+            </span>
+            <h2 className="text-3xl md:text-5xl font-black text-white tracking-tight leading-tight">
+              <ScrollReveal
+                baseOpacity={0.1}
+                blurStrength={3}
               >
-                Actionable Intelligence
-              </span>
+                From Raw Documents to Actionable Intelligence
+              </ScrollReveal>
             </h2>
           </motion.div>
 
@@ -559,19 +626,19 @@ const LandingPage = ({ setView }) => {
             viewport={{ once: true, margin: "-80px" }}
             className="text-center mb-16"
           >
-            <span className="text-storm-300 text-sm font-bold tracking-[0.2em] uppercase mb-4 block">Capabilities</span>
+            <span className="text-storm-300 text-sm font-bold tracking-[0.2em] uppercase mb-4 block">
+              <ShinyText text="Capabilities" disabled={false} speed={3} className="text-storm-300" />
+            </span>
             <h2 className="text-3xl md:text-5xl font-black text-white tracking-tight">
-              Everything You Need to{' '}
-              <span
-                style={{
-                  background: 'linear-gradient(90deg, #88BDF2, #c084fc)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
+              <SplitText text="Everything You Need to " className="inline-block" delay={30} />
+              <GradientText
+                colors={['#88BDF2', '#c084fc', '#88BDF2']}
+                animationSpeed={6}
+                showBorder={false}
+                className="inline-block"
               >
                 Understand Documents
-              </span>
+              </GradientText>
             </h2>
           </motion.div>
 
@@ -606,7 +673,16 @@ const LandingPage = ({ setView }) => {
                 >
                   <feat.icon style={{ color: feat.hex }} size={24} />
                 </div>
-                <h3 className="text-white font-bold text-xl mb-3 relative z-10">{feat.title}</h3>
+                <h3 className="text-white font-bold text-xl mb-3 relative z-10">
+                  <Shuffle
+                    text={feat.title}
+                    iterations={3}
+                    fps={30}
+                    direction="forward"
+                    textColor="white"
+                    active={false} // Will rely on parent hover state? Actually, Shuffle takes active prop, or triggers on hover of itself.
+                  />
+                </h3>
                 <p className="text-storm-100/50 text-sm leading-relaxed relative z-10">{feat.description}</p>
               </motion.div>
             ))}
@@ -615,17 +691,22 @@ const LandingPage = ({ setView }) => {
       </section>
 
       {/* ====== HOW IT WORKS ====== */}
-      <section className="relative z-10 py-24 px-6">
-        <div className="max-w-5xl mx-auto">
+      <section className="relative z-10 py-24 px-6 overflow-hidden">
+        <div className="absolute top-1/2 left-0 w-full -translate-y-1/2 opacity-[0.03] pointer-events-none z-0">
+          <ScrollVelocity texts={['HOW IT WORKS • DOCUMIND • PIPELINE • ANALYSIS • ']} />
+        </div>
+        <div className="max-w-5xl mx-auto relative z-10">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true, margin: "-80px" }}
             className="text-center mb-20"
           >
-            <span className="text-storm-300 text-sm font-bold tracking-[0.2em] uppercase mb-4 block">How It Works</span>
-            <h2 className="text-3xl md:text-5xl font-black text-white tracking-tight">
-              Three Steps to{' '}
+            <span className="text-storm-300 text-sm font-bold tracking-[0.2em] uppercase mb-4 block">
+              <DecryptedText text="How It Works" speed={50} maxIterations={10} animateOn="view" />
+            </span>
+            <h2 className="text-3xl md:text-5xl font-black text-white tracking-tight flex items-center justify-center gap-3">
+              <BlurText text="Three Steps to" delay={30} animateBy="words" direction="top" className="inline-block" />
               <span
                 style={{
                   background: 'linear-gradient(90deg, #88BDF2, #34d399)',
@@ -656,8 +737,16 @@ const LandingPage = ({ setView }) => {
                   <div className="flex-1">
                     <div className="bg-white/[0.03] border border-white/[0.06] rounded-3xl p-8 hover:bg-white/[0.06] transition-all duration-300">
                       <div className="text-sm font-black tracking-[0.15em] uppercase mb-3" style={{ color: step.accentHex }}>{step.num}</div>
-                      <h3 className="text-white text-2xl font-bold mb-3">{step.title}</h3>
-                      <p className="text-storm-100/50 leading-relaxed">{step.desc}</p>
+                      <h3 className="text-white text-2xl font-bold mb-3">
+                        {idx === 0 && <SplitText text={step.title} className="inline-block" delay={40} />}
+                        {idx === 1 && <ShinyText text={step.title} disabled={false} speed={3} className="text-white" />}
+                        {idx === 2 && <BlurText text={step.title} delay={30} animateBy="words" direction="top" className="inline-block" />}
+                      </h3>
+                      <div className="text-storm-100/50 leading-relaxed">
+                        {idx === 0 && <BlurText text={step.desc} delay={20} animateBy="words" direction="bottom" className="inline-block" />}
+                        {idx === 1 && <DecryptedText text={step.desc} speed={80} maxIterations={10} animateOn="view" />}
+                        {idx === 2 && <SplitText text={step.desc} className="inline-block" delay={15} />}
+                      </div>
                     </div>
                   </div>
 
@@ -688,10 +777,13 @@ const LandingPage = ({ setView }) => {
                   transition={{ delay: idx * 0.1 }}
                   className="text-center"
                 >
-                  <div className="text-4xl md:text-5xl font-black text-white mb-2">
-                    <AnimCounter target={typeof stat.value === 'number' ? stat.value : 0} suffix={stat.suffix} />
+                  <div className="text-4xl md:text-5xl font-black text-white mb-2 flex items-center justify-center gap-1">
+                    <CountUp to={typeof stat.value === 'number' ? stat.value : 0} duration={2} />
+                    <span>{stat.suffix}</span>
                   </div>
-                  <div className="text-storm-100/40 text-sm font-medium">{stat.label}</div>
+                  <div className="text-storm-100/40 text-sm font-medium flex justify-center">
+                    <DecryptedText text={stat.label} speed={50} maxIterations={10} animateOn="view" className="text-sm font-medium" />
+                  </div>
                 </motion.div>
               ))}
             </div>
@@ -710,29 +802,31 @@ const LandingPage = ({ setView }) => {
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
           >
-            <h2 className="text-4xl md:text-6xl font-black text-white tracking-tight mb-6">
-              Ready to Decode{' '}
-              <span
-                style={{
-                  background: 'linear-gradient(90deg, #88BDF2, #c084fc)',
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}
-              >
-                Your Data?
-              </span>
+            <h2 className="text-4xl md:text-6xl font-black text-white tracking-tight mb-6 flex flex-wrap items-center justify-center gap-4">
+              <span>Ready to Decode</span>
+              <RotatingText
+                texts={['Your Data?', 'Your Documents?', 'Your Emails?', 'The Unstructured?']}
+                mainClassName="inline-flex px-4 bg-gradient-to-r from-[#88BDF2] to-[#c084fc] text-black overflow-hidden py-1 justify-center rounded-2xl"
+                staggerFrom="last"
+                initial={{ y: "100%" }}
+                animate={{ y: 0 }}
+                exit={{ y: "-120%" }}
+                staggerDuration={0.025}
+                splitLevelClassName="overflow-hidden pb-1"
+                transition={{ type: "spring", damping: 30, stiffness: 400 }}
+                rotationInterval={2500}
+              />
             </h2>
             <p className="text-storm-100/50 text-lg mb-10 max-w-xl mx-auto">
-              Join thousands of enterprises transforming how they understand unstructured documents.
+              <BlurText text="Join thousands of enterprises transforming how they understand unstructured documents." delay={20} animateBy="words" direction="bottom" className="inline-block" />
             </p>
             <button
               onClick={() => setView('login')}
-              className="group relative inline-flex items-center justify-center gap-3 text-[#0f1923] font-extrabold text-xl px-14 py-6 rounded-2xl transition-all duration-300 shadow-[0_0_60px_rgba(136,189,242,0.3)] hover:shadow-[0_0_100px_rgba(136,189,242,0.5)] overflow-hidden"
+              className="electric-border group relative inline-flex items-center justify-center gap-3 text-[#0f1923] font-extrabold text-xl px-14 py-6 rounded-2xl transition-all duration-300 shadow-[0_0_60px_rgba(136,189,242,0.3)] hover:shadow-[0_0_100px_rgba(136,189,242,0.5)] overflow-hidden"
               style={{ background: 'linear-gradient(90deg, #88BDF2, #6ba3e0)' }}
             >
               <span className="relative z-10 flex items-center gap-2">
-                Initialize Workspace
+                <ShinyText text="Initialize Workspace" disabled={false} speed={3} className="font-extrabold text-xl" color="#0f1923" shineColor="#ffffff" />
                 <ChevronRight size={24} className="group-hover:translate-x-2 transition-transform duration-300" />
               </span>
               <div className="absolute inset-0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/30 to-transparent z-0" />
@@ -744,11 +838,11 @@ const LandingPage = ({ setView }) => {
       {/* ====== FOOTER ====== */}
       <footer className="relative z-10 border-t border-white/[0.06] py-10 px-6">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-storm-300 to-storm-500 flex items-center justify-center">
+          <div className="flex items-center gap-3 relative">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-storm-300 to-storm-500 flex items-center justify-center relative z-10">
               <BrainCircuit size={16} className="text-white" />
             </div>
-            <span className="text-white font-bold">DocuMind</span>
+            <span className="text-white font-bold relative z-10">DocuMind</span>
             <span className="text-storm-100/30 text-sm">© 2026</span>
           </div>
           <div className="flex items-center gap-6 text-storm-100/40 text-sm">
@@ -776,17 +870,18 @@ const LandingPage = ({ setView }) => {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 20 }}
               transition={{ type: "spring", stiffness: 300, damping: 25 }}
-              className="relative z-10 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+              className="relative z-10 w-full max-w-2xl max-h-[90vh]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-[#0f1923] border border-white/10 rounded-3xl p-8 md:p-10 shadow-2xl">
+              <GlareHover className="bg-[#0f1923] border border-white/10 rounded-3xl shadow-2xl w-full relative overflow-hidden">
                 {/* Close */}
                 <button
                   onClick={() => setShowOnboarding(false)}
-                  className="absolute top-6 right-6 w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-storm-100/60 hover:text-white transition-all"
+                  className="absolute top-6 right-6 w-10 h-10 rounded-xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-storm-100/60 hover:text-white transition-all z-50"
                 >
                   <X size={20} />
                 </button>
+                <div className="max-h-[90vh] overflow-y-auto px-8 md:px-10 py-24 relative z-10">
 
                 <div className="text-center mb-8">
                   <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-storm-300 to-storm-500 flex items-center justify-center mx-auto mb-5 shadow-lg shadow-storm-300/20">
@@ -850,12 +945,15 @@ const LandingPage = ({ setView }) => {
 
                 <button
                   onClick={() => { setShowOnboarding(false); setView('login'); }}
-                  className="w-full text-[#0f1923] hover:text-[#0f1923] font-bold py-4 rounded-xl transition-all shadow-lg shadow-storm-300/20 hover:shadow-storm-300/40 text-lg flex items-center justify-center gap-2 hover:opacity-90"
+                  className="electric-border w-full text-[#0f1923] hover:text-[#0f1923] font-bold py-4 rounded-xl transition-all shadow-lg shadow-storm-300/20 hover:shadow-storm-300/40 text-lg flex items-center justify-center gap-2 hover:opacity-90"
                   style={{ background: 'linear-gradient(90deg, #88BDF2, #6A89A7)' }}
                 >
                   Continue to Sign In <ArrowRight size={20} />
                 </button>
-              </div>
+                </div>
+                <GradualBlur position="top" height="6rem" zIndex={20} />
+                <GradualBlur position="bottom" height="6rem" zIndex={20} />
+              </GlareHover>
             </motion.div>
           </motion.div>
         )}
@@ -880,7 +978,7 @@ const LandingPage = ({ setView }) => {
               className="relative z-10 w-full max-w-xl max-h-[85vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="bg-[#0f1923] border border-white/10 rounded-3xl p-8 shadow-2xl">
+              <GlareHover className="bg-[#0f1923] border border-white/10 rounded-3xl p-8 shadow-2xl w-full">
                 {/* Close */}
                 <button
                   onClick={() => setFooterModal(null)}
@@ -985,7 +1083,7 @@ const LandingPage = ({ setView }) => {
                     </div>
                   </div>
                 )}
-              </div>
+              </GlareHover>
             </motion.div>
           </motion.div>
         )}
@@ -1114,14 +1212,44 @@ const LoginPage = ({ setView }) => {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative bg-[#0f1923]">
+      {/* Dot Field Background */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <DotField
+          glowColor="#0f1923"
+          gradientFrom="#6A89A7"
+          gradientTo="#88BDF2"
+          dotRadius={2.0}
+          dotSpacing={18}
+        />
+      </div>
+
       {/* Background ambient glow */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-storm-300/8 blur-[120px] rounded-full pointer-events-none" />
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[#cf9eff]/5 blur-[120px] rounded-full pointer-events-none" />
 
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         className="w-full max-w-md z-10 relative"
       >
+        {/* Laser Flow falling from above hitting the top center of the card */}
+        <div 
+          className="absolute left-0 w-full pointer-events-none z-[-1]"
+          style={{
+            height: '100vh',
+            bottom: '100%',
+            marginBottom: '-2px' // Overlap slightly to perfectly touch the top border
+          }}
+        >
+          <LaserFlow
+            color="#cf9eff"
+            verticalSizing={8.0}
+            horizontalSizing={1.5} // Perfectly matches the width of the card
+            verticalBeamOffset={-0.5} // Beam strikes from the top and ends at the bottom edge of this container
+            wispSpeed={-20.0} // Particles flow downwards
+            fogIntensity={0.05}
+          />
+        </div>
+
         {/* Close / Back button */}
         <button
           onClick={() => setView('landing')}
@@ -1137,11 +1265,15 @@ const LoginPage = ({ setView }) => {
           <X size={20} />
         </button>
 
-        <GlassCard className="p-8">
+        <GlassCard className="p-8" style={{ borderColor: 'rgba(207, 158, 255, 0.4)', boxShadow: '0 25px 50px -12px rgba(207, 158, 255, 0.15)' }}>
           <div className="text-center mb-8">
             <BrainCircuit size={48} className="mx-auto text-storm-300 mb-4" />
-            <h2 className="text-3xl font-bold text-white">Welcome Back</h2>
-            <p className="text-storm-100/70 mt-2">Sign in to access your multi-modal workspace.</p>
+            <h2 className="text-3xl font-bold text-white">
+              <TextCursor text="Welcome Back" />
+            </h2>
+            <div className="text-storm-100/70 mt-2">
+              <DecryptedText text="Sign in to access your multi-modal workspace." speed={50} maxIterations={10} animateOn="view" />
+            </div>
           </div>
 
           {error && (
@@ -1157,7 +1289,9 @@ const LoginPage = ({ setView }) => {
 
           <form onSubmit={handleSignIn} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-storm-100 mb-1">Email</label>
+              <label className="block text-sm font-medium text-storm-100 mb-1">
+                <BlurText text="Email" delay={30} animateBy="letters" />
+              </label>
               <div className="relative">
                 <User className="absolute left-3 top-1/2 -translate-y-1/2 text-storm-100/50" size={18} />
                 <input
@@ -1171,7 +1305,9 @@ const LoginPage = ({ setView }) => {
             </div>
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-storm-100">Password</label>
+                <label className="block text-sm font-medium text-storm-100">
+                  <BlurText text="Password" delay={30} animateBy="letters" />
+                </label>
                 <button
                   type="button"
                   onClick={() => alert("Forgot password functionality coming soon!")}
@@ -1193,10 +1329,10 @@ const LoginPage = ({ setView }) => {
             </div>
             <button
               type="submit"
-              className="w-full text-[#0f1923] font-bold py-3 rounded-lg mt-6 transition-all shadow-lg hover:shadow-storm-300/25 hover:opacity-90 flex justify-center items-center gap-2"
+              className="electric-border w-full text-[#0f1923] font-bold py-3 rounded-lg mt-6 transition-all shadow-lg hover:shadow-storm-300/25 hover:opacity-90 flex justify-center items-center gap-2"
               style={{ background: 'linear-gradient(90deg, #6A89A7, #88BDF2)' }}
             >
-              Sign In <ChevronRight size={18} />
+              <TextType text="Sign In" /> <ChevronRight size={18} />
             </button>
           </form>
         </GlassCard>
@@ -1231,15 +1367,40 @@ const Dashboard = ({ setView }) => {
 
   return (
     <div className="h-screen w-full flex flex-col bg-gradient-to-br from-[#0B1121] via-[#111A2E] to-[#0A192F] text-storm-100 p-2 gap-2 font-sans overflow-hidden relative">
+      {/* Dot Field Background */}
+      <div className="fixed inset-0 z-0 pointer-events-none">
+        <DotField
+          glowColor="#0f1923"
+          gradientFrom="#6A89A7"
+          gradientTo="#88BDF2"
+          dotRadius={2.0}
+          dotSpacing={18}
+        />
+      </div>
 
       {/* TOP NAVBAR */}
-      <div className="w-full h-14 bg-black/20 rounded-xl border border-white/10 flex items-center justify-between px-4 shrink-0">
+      <div className="w-full h-14 bg-black/20 rounded-xl border border-white/10 flex items-center justify-between px-4 shrink-0 relative">
+        {/* Strands wrapper constrained strictly to the middle space, avoiding icons */}
+        <div 
+          className="absolute inset-y-0 left-[140px] right-[80px] pointer-events-none z-0 overflow-hidden"
+          style={{ WebkitMaskImage: 'linear-gradient(to right, transparent, black 15%, black 85%, transparent)' }}
+        >
+          {/* Strands stretched aggressively to maintain the continuous laser look */}
+          <div 
+            className="absolute top-1/2 left-1/2 w-[400px] h-[400px]"
+            style={{ transform: 'translate(-50%, -50%) scaleX(4)' }}
+          >
+            <Strands />
+          </div>
+        </div>
+
         <button
           onClick={() => setView('landing')}
-          className="flex items-center gap-2 text-white font-bold hover:text-storm-300 transition-colors"
+          className="flex items-center gap-2 text-white font-bold hover:text-storm-300 transition-colors z-10 relative"
         >
           <BrainCircuit size={20} className="text-storm-300" />
-          DocuMind Home
+          <GlitchText text="DocuMind" speed={0.5} />
+          <span className="text-xs bg-storm-300/20 text-storm-300 px-2 py-0.5 rounded-md ml-1 font-semibold border border-storm-300/30">Home</span>
         </button>
 
         <div className="relative">
@@ -1281,20 +1442,36 @@ const Dashboard = ({ setView }) => {
       <div className="flex-1 w-full flex gap-2 min-h-0">
         {/* LEFT PANEL: Document Management */}
         <GlassCard className="w-1/4 h-full flex flex-col rounded-xl overflow-hidden">
-          <div className="p-4 border-b border-white/10 bg-black/10">
-            <h2 className="text-lg font-bold flex items-center gap-2 text-white">
-              <LayoutDashboard className="text-storm-300" /> Workspace
-            </h2>
+          <div className="p-4 border-b border-white/10 bg-black/10 z-10 relative flex items-center">
+            <LayoutDashboard className="text-storm-300 mr-2" />
+            <div className="text-lg font-bold text-white leading-none mt-1">
+              <TrueFocus 
+                sentence="Workspace" 
+                manualMode={false} 
+                blurAmount={3} 
+                borderColor="#88BDF2" 
+                animationDuration={0.4} 
+                pauseBetweenAnimations={1} 
+              />
+            </div>
           </div>
           <div className="p-4 flex-1 overflow-y-auto">
             {/* Drag & Drop Zone */}
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-storm-500/50 rounded-xl p-6 text-center mb-6 hover:bg-white/5 transition-colors cursor-pointer"
+              className="relative border-2 border-dashed border-storm-500/50 rounded-xl p-6 text-center mb-6 hover:bg-white/5 transition-colors cursor-pointer overflow-hidden group"
             >
-              <UploadCloud className="mx-auto mb-2 text-storm-300" size={32} />
-              <p className="text-sm font-medium">Click or Drag & drop documents</p>
-              <p className="text-xs text-storm-100/60 mt-1">PDF, DOCX, PNG supported</p>
+              {/* ShapeBlur background */}
+              <div className="absolute inset-0 z-0 pointer-events-none opacity-40 group-hover:opacity-80 transition-opacity duration-500">
+                <ShapeBlur variation={0} shapeSize={1.2} roundness={0.4} borderSize={0.05} circleSize={0.3} circleEdge={0.5} />
+              </div>
+
+              {/* Text content lifted above blur */}
+              <div className="relative z-10 pointer-events-none">
+                <UploadCloud className="mx-auto mb-2 text-storm-300" size={32} />
+                <p className="text-sm font-medium">Click or Drag & drop documents</p>
+                <p className="text-xs text-storm-100/60 mt-1">PDF, DOCX, PNG supported</p>
+              </div>
               <input
                 type="file"
                 ref={fileInputRef}
@@ -1316,7 +1493,16 @@ const Dashboard = ({ setView }) => {
               />
             </div>
 
-            <h3 className="text-xs uppercase font-bold text-storm-100/50 tracking-wider mb-3">Ingested Assets</h3>
+            <h3 className="text-xs uppercase font-bold text-storm-100/50 tracking-wider mb-3 relative z-10">
+              <ScrollFloat
+                text="Ingested Assets"
+                animationDuration={1}
+                stagger={0.05}
+                ease="back.out(2)"
+                scrollStart="center bottom+=50"
+                scrollEnd="bottom bottom-=400"
+              />
+            </h3>
             <div className="space-y-2">
               {docs.length === 0 ? (
                 <div className="text-center p-4 border border-white/5 rounded-lg bg-white/[0.02]">
@@ -1324,7 +1510,7 @@ const Dashboard = ({ setView }) => {
                 </div>
               ) : (
                 docs.map(doc => (
-                  <div key={doc.id} className="bg-white/5 p-3 rounded-lg flex items-center justify-between group hover:bg-white/10 transition-colors cursor-pointer border border-white/5">
+                  <SpotlightCard key={doc.id} className="p-3 flex items-center justify-between group hover:bg-white/10 transition-colors cursor-pointer border border-white/5 bg-white/5">
                     <div className="flex items-center gap-3">
                       <div className="text-storm-300">{doc.icon}</div>
                       <div className="truncate w-32 text-sm">{doc.name}</div>
@@ -1342,7 +1528,7 @@ const Dashboard = ({ setView }) => {
                         <X size={14} />
                       </button>
                     </div>
-                  </div>
+                  </SpotlightCard>
                 ))
               )}
             </div>
@@ -1351,12 +1537,23 @@ const Dashboard = ({ setView }) => {
 
         {/* CENTER PANEL: Chat & QA */}
         <GlassCard className="w-2/4 h-full flex flex-col rounded-xl overflow-hidden relative">
-          <div className="p-4 border-b border-white/10 bg-black/10 flex justify-between items-center">
-            <h2 className="text-lg font-bold text-white">Multi-Modal Analyst Assistant</h2>
+          <AuroraBackground className="opacity-30 mix-blend-screen" />
+          
+          <div className="p-4 border-b border-white/10 bg-black/20 backdrop-blur-md flex justify-between items-center z-10 relative">
+            <div className="text-lg font-bold text-white mt-1">
+              <TrueFocus 
+                sentence="Multi-Modal Analyst Assistant" 
+                manualMode={false} 
+                blurAmount={4} 
+                borderColor="#cf9eff" 
+                animationDuration={0.6} 
+                pauseBetweenAnimations={1.5} 
+              />
+            </div>
             <span className="text-xs bg-storm-500/20 text-storm-300 px-2 py-1 rounded-full border border-storm-500/30">Llama-3 Reasoning</span>
           </div>
 
-          <div className="flex-1 p-6 overflow-y-auto space-y-6 flex flex-col justify-end">
+          <div className="flex-1 p-6 overflow-y-auto space-y-6 flex flex-col justify-end z-10 relative">
             {messages.length === 0 ? (
               <div className="text-center text-storm-100/40 my-auto">
                 <MessageSquare size={48} className="mx-auto mb-4 opacity-50" />
@@ -1365,8 +1562,23 @@ const Dashboard = ({ setView }) => {
             ) : (
               messages.map((msg, idx) => (
                 <div key={idx} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] rounded-2xl p-4 ${msg.sender === 'user' ? 'bg-storm-500 text-white rounded-br-none shadow-lg' : 'bg-white/5 border border-white/10 rounded-bl-none'}`}>
-                    <p className="text-sm leading-relaxed">{msg.text}</p>
+                  <div className={`max-w-[85%] rounded-2xl p-4 backdrop-blur-md border ${msg.sender === 'user' ? 'bg-storm-500/40 border-storm-300/30 text-white rounded-br-none shadow-[0_0_15px_rgba(106,137,167,0.3)]' : 'bg-white/10 border-white/20 rounded-bl-none shadow-xl'}`}>
+                    <div className="text-sm leading-relaxed">
+                      {msg.sender === 'ai' ? (
+                        <FallingText
+                          text={msg.text}
+                          highlightWords={['unstructured', 'graph', 'data']}
+                          highlightClass="text-emerald-400 font-bold"
+                          trigger="hover"
+                          backgroundColor="transparent"
+                          wireframes={false}
+                          gravity={0.5}
+                          fontSize="14px"
+                        />
+                      ) : (
+                        msg.text
+                      )}
+                    </div>
                     {msg.citations && (
                       <div className="mt-3 flex flex-wrap gap-2">
                         {msg.citations.map(cite => (
@@ -1385,7 +1597,7 @@ const Dashboard = ({ setView }) => {
               ))
             )}
           </div>
-          <div className="p-4 bg-black/20 backdrop-blur-md border-t border-white/10">
+          <div className="p-4 bg-black/20 backdrop-blur-md border-t border-white/10 z-10 relative">
             <div className="relative">
               <input
                 type="text"
@@ -1491,8 +1703,17 @@ const Dashboard = ({ setView }) => {
                 >
                   {docs.length > 0 ? (
                     <>
+                      {/* Dynamic Circular Text overlay on the Graph Center */}
+                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[160px] h-[160px] pointer-events-none opacity-40 mix-blend-screen z-0">
+                        <CircularText
+                          text="KNOWLEDGE*GRAPH*ANALYSIS*"
+                          onHover="slowDown"
+                          spinDuration={15}
+                        />
+                      </div>
+                    
                       {/* Mock Knowledge Graph using SVG (Only shows if docs exist) */}
-                      <svg className="w-full h-full" viewBox="0 0 200 200">
+                      <svg className="w-full h-full relative z-10" viewBox="0 0 200 200">
                         {/* Edges */}
                         <line x1="100" y1="100" x2="50" y2="50" stroke="#6A89A7" strokeWidth="2" strokeDasharray="4" />
                         <line x1="100" y1="100" x2="150" y2="60" stroke="#6A89A7" strokeWidth="2" />
@@ -1514,7 +1735,7 @@ const Dashboard = ({ setView }) => {
 
                         <circle cx="180" cy="90" r="6" fill="#BDDDFC" />
                       </svg>
-                      <div className="absolute bottom-0 text-xs text-storm-100/50 text-center w-full pb-4">
+                      <div className="absolute bottom-0 text-xs text-storm-100/50 text-center w-full pb-4 z-20">
                         Semantic relational mapping visualized.
                       </div>
                     </>
@@ -1539,10 +1760,13 @@ export default function App() {
   const [view, setView] = useState('landing'); // 'landing', 'login', 'dashboard'
 
   return (
-    <>
+    <ClickSpark sparkColor="#cf9eff" sparkSize={10} sparkRadius={15} sparkCount={8} duration={400}>
+      <div className="fixed inset-0 z-50 pointer-events-none">
+        <FluidGlass />
+      </div>
       {view === 'landing' && <LandingPage setView={setView} />}
       {view === 'login' && <LoginPage setView={setView} />}
       {view === 'dashboard' && <Dashboard setView={setView} />}
-    </>
+    </ClickSpark>
   );
 }
