@@ -91,37 +91,21 @@ DEFAULT_CONCURRENCY_LIMIT = 3
 DEFAULT_TEXT_CHUNK_CHARS = 1600
 DEFAULT_TEXT_CHUNK_OVERLAP = 200
 
-DEFAULT_NVIDIA_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-DEFAULT_NVIDIA_EMBED_URL = "https://integrate.api.nvidia.com/v1/embeddings"
-DEFAULT_NVIDIA_RERANK_URL = "https://integrate.api.nvidia.com/v1/ranking"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+# Chat/Reasoning and Embeddings live on the new unified integration gateway
+NVIDIA_CHAT_URL = f"{NVIDIA_BASE_URL}/chat/completions"
+NVIDIA_EMBED_URL = f"{NVIDIA_BASE_URL}/embeddings"
+
+# Reranker remains hosted on the dedicated legacy retrieval subdomain
+NVIDIA_RERANK_URL = "https://ai.api.nvidia.com/v1/retrieval/nvidia/reranking"
 
 
-def env_url(name: str, default: str, required_suffix: str) -> str:
-    url = os.getenv(name, default).strip().strip('"').strip("'")
-    if not url.startswith(("https://", "http://")):
-        raise ValueError(f"{name} must be a valid HTTP(S) URL, got: {url}")
-    url = url.rstrip("/")
-    if url.endswith("/v1"):
-        return f"{url}{required_suffix}"
-    return url
-
-
-NVIDIA_CHAT_URL = env_url("NVIDIA_CHAT_URL", DEFAULT_NVIDIA_CHAT_URL, "/chat/completions")
-NVIDIA_EMBED_URL = env_url("NVIDIA_EMBED_URL", DEFAULT_NVIDIA_EMBED_URL, "/embeddings")
-NVIDIA_RERANK_URL = env_url("NVIDIA_RERANK_URL", DEFAULT_NVIDIA_RERANK_URL, "/ranking")
-NVIDIA_EMBED_URLS = [
-    NVIDIA_EMBED_URL,
-    "https://ai.api.nvidia.com/v1/retrieval/nvidia/nv-embed-v1/embeddings",
-]
-NVIDIA_RERANK_URLS = [
-    NVIDIA_RERANK_URL,
-    "https://ai.api.nvidia.com/v1/retrieval/nvidia/rerank-qa-mistral-4b/reranking",
-]
-
+# --- Corrected Model Strings ---
 
 VISION_MODEL = "meta/llama-3.2-90b-vision-instruct"
-EMBED_MODEL = "nv-embed-v1"
-RERANK_MODEL = "rerank-qa-mistral-4b"
+EMBED_MODEL = "nvidia/nv-embed-v1"                 # ADDED 'nvidia/'
+RERANK_MODEL = "nvidia/rerank-qa-mistral-4b"       # ADDED 'nvidia/'
 REASONING_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
 GRAPH_EXTRACTION_MODEL = "meta/llama-4-maverick-17b-128e-instruct"
 
@@ -300,25 +284,14 @@ class NvidiaNIMClient:
                     "encoding_format": "float",
                     "input_type": "passage",
                 }
-                last_error: Exception | None = None
-                for endpoint in NVIDIA_EMBED_URLS:
-                    try:
-                        data = await self.post_with_backoff(
-                            client,
-                            endpoint,
-                            payload,
-                            label=f"embedding batch {start // batch_size + 1}",
-                            timeout=120.0,
-                        )
-                        embeddings.extend(parse_embedding_response(data))
-                        last_error = None
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                if last_error is not None:
-                    raise RuntimeError(
-                        f"Embedding batch {start // batch_size + 1} failed: {last_error}"
-                    ) from last_error
+                data = await self.post_with_backoff(
+                    client,
+                    NVIDIA_EMBED_URL,
+                    payload,
+                    label=f"embedding batch {start // batch_size + 1}",
+                    timeout=120.0,
+                )
+                embeddings.extend(parse_embedding_response(data))
         return embeddings
 
     async def rerank(self, query: str, chunks: list[DocumentChunk]) -> list[tuple[DocumentChunk, float]]:
@@ -342,23 +315,22 @@ class NvidiaNIMClient:
 
         async with httpx.AsyncClient() as client:
             last_error: Exception | None = None
-            for endpoint in NVIDIA_RERANK_URLS:
-                for payload in payload_variants:
-                    try:
-                        data = await self.post_with_backoff(
-                            client,
-                            endpoint,
-                            payload,
-                            label="reranking",
-                            timeout=90.0,
-                            max_retries=3,
-                        )
-                        scores = parse_rerank_response(data, len(chunks))
-                        return sorted(
-                            zip(chunks, scores), key=lambda item: item[1], reverse=True
-                        )
-                    except Exception as exc:  # endpoint schema differs across NIM deployments
-                        last_error = exc
+            for payload in payload_variants:
+                try:
+                    data = await self.post_with_backoff(
+                        client,
+                        NVIDIA_RERANK_URL,
+                        payload,
+                        label="reranking",
+                        timeout=90.0,
+                        max_retries=3,
+                    )
+                    scores = parse_rerank_response(data, len(chunks))
+                    return sorted(
+                        zip(chunks, scores), key=lambda item: item[1], reverse=True
+                    )
+                except Exception as exc:  # endpoint schema differs across NIM deployments
+                    last_error = exc
             raise RuntimeError(f"Reranking failed: {last_error}")
 
     async def extract_graph_facts(self, chunk: DocumentChunk) -> dict[str, Any]:
