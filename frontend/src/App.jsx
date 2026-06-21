@@ -44,24 +44,7 @@ import {
 } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
-// --- MOCK DATA ---
-const mockDocs = [
-  { id: 1, name: 'Q3_Financial_Report.pdf', status: 'Parsed', icon: <FileBarChart size={18} /> },
-  { id: 2, name: 'System_Architecture_v2.docx', status: 'Extracting Tables...', icon: <FileText size={18} /> },
-  { id: 3, name: 'Server_Topography.png', status: 'Parsed', icon: <FileImage size={18} /> },
-];
 
-const mockChat = [
-  { sender: 'user', text: 'What was our primary revenue driver in Q3, and how does it relate to the new server architecture?' },
-  {
-    sender: 'ai',
-    text: 'Based on the uploaded documents, the primary revenue driver in Q3 was Enterprise Cloud Solutions, which saw a 34% increase. This aligns directly with the deployment of the distributed server topography. You can see the revenue breakdown in ',
-    citations: [
-      { id: 'c1', label: '[Table 3, Page 12]' },
-      { id: 'c2', label: '[Architecture Diagram]' }
-    ]
-  }
-];
 
 import BorderGlow from './components/BorderGlow';
 
@@ -1374,23 +1357,95 @@ const Dashboard = ({ setView, session }) => {
   const [activeTab, setActiveTab] = useState('source');
   const [activeCitation, setActiveCitation] = useState(null);
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState([]); // Removed mock data for backend integration
-  const [docs, setDocs] = useState([]); // Removed mock data for backend integration
+  const [messages, setMessages] = useState([]);
+  const [docs, setDocs] = useState([]);
   const [showProfile, setShowProfile] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const fileInputRef = useRef(null);
 
-  const handleSend = () => {
-    if (!input.trim()) return;
-    setMessages([...messages, { sender: 'user', text: input }]);
+  const handleSend = async () => {
+    if (!input.trim() || isProcessing) return;
+    const userQuery = input;
+    // We get the index of the next AI message
+    const messageIndex = messages.length + 1;
+    
+    setMessages(prev => [...prev, { sender: 'user', text: userQuery }]);
     setInput('');
-    // Simulate AI typing delay
-    setTimeout(() => {
-      setMessages(prev => [...prev, {
-        sender: 'ai',
-        text: 'I am a mock response for the hackathon UI! Processing unstructured graph data...',
-        citations: [{ id: 'c3', label: '[Graph Node 42]' }]
-      }]);
-    }, 1000);
+    setIsProcessing(true);
+
+    // Initial placeholder for AI message
+    setMessages(prev => [...prev, { sender: 'ai', text: '', status: 'Connecting to backend...', citations: null }]);
+
+    try {
+      const res = await fetch('http://localhost:8000/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: userQuery, agentic: false })
+      });
+
+      if (!res.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let done = false;
+      let currentText = '';
+
+      while (!done) {
+        const { value, done: doneReading } = await reader.read();
+        done = doneReading;
+        if (value) {
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+          let currentEvent = null;
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) {
+              currentEvent = line.substring(7).trim();
+            } else if (line.startsWith('data: ')) {
+              const dataStr = line.substring(6).trim();
+              if (dataStr) {
+                try {
+                  const data = JSON.parse(dataStr);
+                  if (currentEvent === 'status') {
+                    setMessages(prev => {
+                      const newMsgs = [...prev];
+                      newMsgs[messageIndex] = { ...newMsgs[messageIndex], status: data.message };
+                      return newMsgs;
+                    });
+                  } else if (currentEvent === 'answer') {
+                    currentText += data.text;
+                    setMessages(prev => {
+                      const newMsgs = [...prev];
+                      newMsgs[messageIndex] = { ...newMsgs[messageIndex], text: currentText, status: null };
+                      return newMsgs;
+                    });
+                  } else if (currentEvent === 'error') {
+                     setMessages(prev => {
+                      const newMsgs = [...prev];
+                      newMsgs[messageIndex] = { ...newMsgs[messageIndex], text: "Error: " + data.message, status: null };
+                      return newMsgs;
+                    });
+                  }
+                } catch (e) {
+                  // Ignore JSON parse errors for incomplete chunks
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        newMsgs[messageIndex] = { ...newMsgs[messageIndex], text: "Failed to connect to backend.", status: null };
+        return newMsgs;
+      });
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   return (
@@ -1496,7 +1551,7 @@ const Dashboard = ({ setView, session }) => {
                 ref={fileInputRef}
                 className="hidden"
                 accept=".pdf,.docx,.png,.jpg,.xlsx,.csv,.txt,.pptx"
-                onChange={(e) => {
+                onChange={async (e) => {
                   const file = e.target.files[0];
                   if (file) {
                     const ext = file.name.split('.').pop().toLowerCase();
@@ -1505,7 +1560,29 @@ const Dashboard = ({ setView, session }) => {
                       : ['xlsx', 'csv'].includes(ext)
                         ? <FileBarChart size={18} />
                         : <FileText size={18} />;
-                    setDocs(prev => [...prev, { id: Date.now(), name: file.name, status: 'Parsed', icon }]);
+                    
+                    const newDoc = { id: Date.now(), name: file.name, status: 'Uploading...', icon };
+                    setDocs(prev => [...prev, newDoc]);
+
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    try {
+                      const res = await fetch('http://localhost:8000/api/ingest', {
+                        method: 'POST',
+                        body: formData
+                      });
+                      if (res.ok) {
+                        const data = await res.json();
+                        setDocs(prev => prev.map(d => d.id === newDoc.id ? { ...d, status: 'Parsed' } : d));
+                      } else {
+                        const err = await res.json();
+                        setDocs(prev => prev.map(d => d.id === newDoc.id ? { ...d, status: 'Error: ' + err.detail } : d));
+                      }
+                    } catch (err) {
+                      console.error(err);
+                      setDocs(prev => prev.map(d => d.id === newDoc.id ? { ...d, status: 'Error' } : d));
+                    }
                   }
                   e.target.value = '';
                 }}
