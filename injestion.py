@@ -2075,44 +2075,19 @@ def run_streamlit_app() -> None:
     )
     st.title("🧠 Hybrid GraphRAG Document Intelligence")
 
+    # Fixed configuration — the API key comes from .env and all tuning knobs are
+    # locked to their defaults so end users can't change keys or pipeline values.
+    api_key = ""  # blank => get_api_key() falls back to NVIDIA_API_KEY in .env
+    ingestion_mode = "Batch (full multimodal)"
+    chunk_size_pages = DEFAULT_CHUNK_SIZE_LIMIT
+    text_chunk_chars = DEFAULT_TEXT_CHUNK_CHARS
+    concurrency_limit = DEFAULT_CONCURRENCY_LIMIT
+    evidence_threshold = None
+
     with st.sidebar:
-        st.header("Configuration")
-        env_key_present = bool(os.getenv("NVIDIA_API_KEY"))
-        api_key = st.text_input(
-            "NVIDIA_API_KEY",
-            type="password",
-            value="",
-            placeholder="Falls back to .env when blank",
-        )
-        if env_key_present and not api_key:
-            st.caption("Using NVIDIA_API_KEY from .env.")
-
-        ingestion_mode = st.radio(
-            "Ingestion mode",
-            ["Batch (full multimodal)", "Streaming (progressive)"],
-            help=(
-                "Batch parses charts/tables via the VLM. Streaming embeds text "
-                "chunks immediately (queryable early) and enriches the graph in "
-                "the background."
-            ),
-        )
-        chunk_size_pages = st.slider("Docling pages per chunk", 1, 25, DEFAULT_CHUNK_SIZE_LIMIT)
-        text_chunk_chars = st.slider("Text chunk size", 600, 4000, DEFAULT_TEXT_CHUNK_CHARS, 100)
-        concurrency_limit = st.slider("NVIDIA API concurrency ceiling", 1, 8, DEFAULT_CONCURRENCY_LIMIT)
-        gate_enabled = st.checkbox(
-            "Enable strict evidence gate",
-            value=False,
-            help="When on, if the top reranked chunk scores below the threshold "
-                 "the answer LLM is NOT called (prevents hallucination). Off by "
-                 "default because the reranker emits negative logits for many "
-                 "relevant chunks.",
-        )
-        evidence_threshold = (
-            st.slider("Evidence gate threshold (min rerank score)", -10.0, 10.0, 0.0, 0.5)
-            if gate_enabled
-            else None
-        )
-
+        st.header("Corpus")
+        if not os.getenv("NVIDIA_API_KEY"):
+            st.error("NVIDIA_API_KEY is not set in .env.")
         if st.button("🗑️ Clear corpus", use_container_width=True):
             try:
                 init_chroma_collection(reset=True)
