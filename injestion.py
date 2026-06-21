@@ -61,6 +61,15 @@ except ImportError:  # pragma: no cover
     st = None
 
 try:
+    from streamlit_agraph import Config as AGraphConfig
+    from streamlit_agraph import Edge as AGraphEdge
+    from streamlit_agraph import Node as AGraphNode
+    from streamlit_agraph import agraph
+except ImportError:  # pragma: no cover - optional graph viz dependency
+    agraph = None
+    AGraphConfig = AGraphEdge = AGraphNode = None
+
+try:
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -74,14 +83,30 @@ except ImportError:  # pragma: no cover
 
 load_dotenv()
 
-# nest_asyncio allows asyncio.run() to work inside Streamlit's already-running
-# Tornado event loop. Optional — asyncio.run() still works in most plain
-# script environments without it.
-try:
-    import nest_asyncio as _nest_asyncio
-    _nest_asyncio.apply()
-except ImportError:
-    pass
+# NOTE: nest_asyncio is intentionally NOT applied here. Newer Streamlit runs on
+# uvloop, which nest_asyncio cannot patch — and its apply() partially replaces
+# asyncio.run() before failing, leaving a broken asyncio.run(). Instead we use
+# run_async() below, which dispatches coroutines safely with the real
+# asyncio.run() regardless of whether a loop is already running.
+
+
+def run_async(coro: Any) -> Any:
+    """Run a coroutine to completion regardless of the current loop state.
+
+    Streamlit's script thread may or may not have a running event loop, and the
+    server may use uvloop (which nest_asyncio cannot patch). When no loop is
+    running we use asyncio.run(); when one is already running we execute in a
+    separate thread so we never call asyncio.run() inside a live loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(coro)).result()
 
 
 # =============================================================================
@@ -178,6 +203,21 @@ class HybridIndex:
     chart_results: list[dict[str, str]]
     markdown_text: str
     vision_report: str
+    # Cross-document corpus state. `sources` lists every ingested document name;
+    # the *_by_source maps let the UI render per-document markdown/vision panels.
+    sources: list[str] = field(default_factory=list)
+    markdown_by_source: dict[str, str] = field(default_factory=dict)
+    vision_by_source: dict[str, str] = field(default_factory=dict)
+
+    def source_names(self) -> list[str]:
+        if self.sources:
+            return self.sources
+        # Fallback for legacy single-doc indexes: derive from chunk sources.
+        seen: list[str] = []
+        for chunk in self.chunks:
+            if chunk.source not in seen:
+                seen.append(chunk.source)
+        return seen
 
 
 # =============================================================================
@@ -683,7 +723,15 @@ def build_document_chunks(
     report_path: str | Path = REPORT_FILENAME,
     text_chunk_chars: int = DEFAULT_TEXT_CHUNK_CHARS,
     text_chunk_overlap: int = DEFAULT_TEXT_CHUNK_OVERLAP,
+    source_name: str | None = None,
 ) -> tuple[list[DocumentChunk], str, str]:
+    """Build chunks for one document.
+
+    ``source_name`` is the logical document name (e.g. the uploaded PDF file
+    name). It is stored on every chunk's ``source`` field so the corpus can be
+    filtered per document for cross-document QA. When omitted we fall back to the
+    legacy markdown filename to preserve single-document behavior.
+    """
     markdown_path = Path(markdown_path)
     report_path = Path(report_path)
     if not markdown_path.exists():
@@ -691,6 +739,8 @@ def build_document_chunks(
 
     markdown_text = markdown_path.read_text(encoding="utf-8")
     vision_report = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+
+    text_source = source_name or "parsed_text_clean.md"
 
     chunks: list[DocumentChunk] = []
     sequence = 0
@@ -701,8 +751,8 @@ def build_document_chunks(
             content = f"{title}\n\n{window}".strip()
             chunks.append(
                 DocumentChunk(
-                    chunk_id=stable_chunk_id("parsed_text_clean.md", sequence, content),
-                    source="parsed_text_clean.md",
+                    chunk_id=stable_chunk_id(f"{text_source}:text", sequence, content),
+                    source=text_source,
                     content_type="text",
                     content=content,
                     title=title,
@@ -715,8 +765,8 @@ def build_document_chunks(
         content = f"Chart/Image file: {filename}\n\nVision summary:\n{summary}".strip()
         chunks.append(
             DocumentChunk(
-                chunk_id=stable_chunk_id("nvidia_vision_report.md", sequence, content),
-                source="nvidia_vision_report.md",
+                chunk_id=stable_chunk_id(f"{text_source}:chart", sequence, content),
+                source=text_source,
                 content_type="chart_summary",
                 content=content,
                 title=Path(filename).name,
@@ -763,8 +813,12 @@ async def vectorize_chunks(
     nim: NvidiaNIMClient,
     reset_collection: bool = True,
     status_callback: StatusCallback = default_status,
+    collection: ChromaCollection | None = None,
 ) -> ChromaCollection:
-    collection = init_chroma_collection(reset=reset_collection)
+    # When a collection is supplied we add to it (additive corpus ingestion);
+    # otherwise open/create one. reset_collection=False keeps prior documents.
+    if collection is None:
+        collection = init_chroma_collection(reset=reset_collection)
     status_callback(f"Embedding {len(chunks)} chunks with NVIDIA {EMBED_MODEL}...")
     embeddings = await nim.embed_texts([chunk.content for chunk in chunks])
     if len(embeddings) != len(chunks):
@@ -772,7 +826,8 @@ async def vectorize_chunks(
             f"Embedding count mismatch: expected {len(chunks)}, got {len(embeddings)}"
         )
 
-    collection.add(
+    # upsert (not add) so re-ingesting the same document is idempotent.
+    collection.upsert(
         ids=[chunk.chunk_id for chunk in chunks],
         embeddings=embeddings,
         documents=[chunk.content for chunk in chunks],
@@ -789,13 +844,18 @@ async def retrieve_and_rerank(
     top_k: int = 10,
     final_k: int = 3,
     min_score: float | None = None,
+    source_filter: str | None = None,
 ) -> list[tuple[DocumentChunk, float]]:
     query_embedding = (await nim.embed_texts([query]))[0]
-    results = index.collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(top_k, len(index.chunks)),
-        include=["documents", "metadatas", "distances"],
-    )
+    query_kwargs: dict[str, Any] = {
+        "query_embeddings": [query_embedding],
+        "n_results": min(top_k, max(1, len(index.chunks))),
+        "include": ["documents", "metadatas", "distances"],
+    }
+    # Scope retrieval to a single document when requested (cross-doc QA).
+    if source_filter:
+        query_kwargs["where"] = {"source": source_filter}
+    results = index.collection.query(**query_kwargs)
     ids = results.get("ids", [[]])[0]
     chunk_by_id = {chunk.chunk_id: chunk for chunk in index.chunks}
     retrieved = [chunk_by_id[item_id] for item_id in ids if item_id in chunk_by_id]
@@ -841,86 +901,163 @@ def safe_relation_label(label: str) -> str:
     return label or "related_to"
 
 
+def _register_entity_source(graph: nx.DiGraph, node_id: str, source: str | None) -> None:
+    """Track which documents mention an entity (drives cross-document linking)."""
+    if not source:
+        return
+    existing = graph.nodes[node_id].get("source_documents")
+    if not isinstance(existing, set):
+        existing = set()
+    existing.add(source)
+    graph.nodes[node_id]["source_documents"] = existing
+
+
+def link_cross_document_entities(graph: nx.DiGraph) -> None:
+    """Add document nodes and RELATED_TO edges between docs sharing entities.
+
+    Cross-document entity resolution is automatic because
+    ``deterministic_entity_uuid`` is source-independent: the same canonical name
+    from two documents maps to one node. Here we materialize that linkage at the
+    document level by counting shared entities between every pair of sources.
+    """
+    shared: dict[tuple[str, str], int] = {}
+    all_sources: set[str] = set()
+    for _, data in graph.nodes(data=True):
+        if data.get("node_type") != "entity":
+            continue
+        sources = sorted(s for s in (data.get("source_documents") or set()) if s)
+        all_sources.update(sources)
+        for i in range(len(sources)):
+            for j in range(i + 1, len(sources)):
+                key = (sources[i], sources[j])
+                shared[key] = shared.get(key, 0) + 1
+
+    for source in all_sources:
+        doc_id = f"document::{source}"
+        if doc_id not in graph:
+            graph.add_node(doc_id, label=source, node_type="document")
+
+    for (src_a, src_b), count in shared.items():
+        if count < 1:
+            continue
+        graph.add_edge(
+            f"document::{src_a}",
+            f"document::{src_b}",
+            relation="related_to",
+            shared_entities=count,
+        )
+
+
+def add_chunk_node(graph: nx.DiGraph, chunk: DocumentChunk) -> None:
+    graph.add_node(
+        chunk.chunk_id,
+        label=chunk.title or chunk.chunk_id,
+        node_type="chunk",
+        content_type=chunk.content_type,
+        source=chunk.source,
+        content=truncate_text(chunk.content, 600),
+    )
+
+
+def apply_graph_facts(
+    graph: nx.DiGraph,
+    entity_to_node_id: dict[str, str],
+    chunk: DocumentChunk,
+    facts: dict[str, Any],
+    source_name: str | None = None,
+) -> None:
+    """Apply one chunk's extracted entities/relations to the shared graph.
+
+    Factored out of build_knowledge_graph so streaming slow-path workers can
+    update the SAME DiGraph incrementally as results arrive.
+    """
+    chunk_source = source_name or chunk.source
+    entities = facts.get("entities", [])
+    relations = facts.get("relations", [])
+
+    for entity in entities:
+        if isinstance(entity, str):
+            name = entity
+            entity_type = "other"
+        else:
+            name = str(entity.get("name", "")).strip()
+            entity_type = str(entity.get("type", "other")).strip() or "other"
+        if not name:
+            continue
+
+        canonical = canonical_entity_key(name)
+        node_id = deterministic_entity_uuid(name)
+        entity_to_node_id[canonical] = node_id
+        graph.add_node(
+            node_id,
+            label=display_entity_name(name),
+            canonical=canonical,
+            node_type="entity",
+            entity_type=entity_type,
+        )
+        _register_entity_source(graph, node_id, chunk_source)
+        graph.add_edge(chunk.chunk_id, node_id, relation="mentions")
+
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        source = str(relation.get("source", "")).strip()
+        target = str(relation.get("target", "")).strip()
+        label = safe_relation_label(str(relation.get("relation", "related_to")))
+        if not source or not target:
+            continue
+
+        source_id = deterministic_entity_uuid(source)
+        target_id = deterministic_entity_uuid(target)
+        source_key = canonical_entity_key(source)
+        target_key = canonical_entity_key(target)
+        entity_to_node_id[source_key] = source_id
+        entity_to_node_id[target_key] = target_id
+
+        graph.add_node(
+            source_id,
+            label=display_entity_name(source),
+            canonical=source_key,
+            node_type="entity",
+            entity_type=graph.nodes.get(source_id, {}).get("entity_type", "other"),
+        )
+        graph.add_node(
+            target_id,
+            label=display_entity_name(target),
+            canonical=target_key,
+            node_type="entity",
+            entity_type=graph.nodes.get(target_id, {}).get("entity_type", "other"),
+        )
+        _register_entity_source(graph, source_id, chunk_source)
+        _register_entity_source(graph, target_id, chunk_source)
+        graph.add_edge(source_id, target_id, relation=label)
+        graph.add_edge(chunk.chunk_id, source_id, relation="supports_relation")
+        graph.add_edge(chunk.chunk_id, target_id, relation="supports_relation")
+
+
 async def build_knowledge_graph(
     chunks: list[DocumentChunk],
     nim: NvidiaNIMClient,
     status_callback: StatusCallback = default_status,
+    graph: nx.DiGraph | None = None,
+    entity_to_node_id: dict[str, str] | None = None,
+    source_name: str | None = None,
 ) -> tuple[nx.DiGraph, dict[str, str]]:
-    graph = nx.DiGraph()
-    entity_to_node_id: dict[str, str] = {}
+    # Accumulate into an existing graph/index when provided (corpus mode).
+    if graph is None:
+        graph = nx.DiGraph()
+    if entity_to_node_id is None:
+        entity_to_node_id = {}
 
     for chunk in chunks:
-        graph.add_node(
-            chunk.chunk_id,
-            label=chunk.title or chunk.chunk_id,
-            node_type="chunk",
-            content_type=chunk.content_type,
-            source=chunk.source,
-            content=truncate_text(chunk.content, 600),
-        )
+        add_chunk_node(graph, chunk)
 
     for chunk in chunks:
         status_callback(f"Extracting entities and relations from {chunk.chunk_id}...")
         facts = await nim.extract_graph_facts(chunk)
-        entities = facts.get("entities", [])
-        relations = facts.get("relations", [])
+        apply_graph_facts(graph, entity_to_node_id, chunk, facts, source_name)
 
-        for entity in entities:
-            if isinstance(entity, str):
-                name = entity
-                entity_type = "other"
-            else:
-                name = str(entity.get("name", "")).strip()
-                entity_type = str(entity.get("type", "other")).strip() or "other"
-            if not name:
-                continue
-
-            canonical = canonical_entity_key(name)
-            node_id = deterministic_entity_uuid(name)
-            entity_to_node_id[canonical] = node_id
-            graph.add_node(
-                node_id,
-                label=display_entity_name(name),
-                canonical=canonical,
-                node_type="entity",
-                entity_type=entity_type,
-            )
-            graph.add_edge(chunk.chunk_id, node_id, relation="mentions")
-
-        for relation in relations:
-            if not isinstance(relation, dict):
-                continue
-            source = str(relation.get("source", "")).strip()
-            target = str(relation.get("target", "")).strip()
-            label = safe_relation_label(str(relation.get("relation", "related_to")))
-            if not source or not target:
-                continue
-
-            source_id = deterministic_entity_uuid(source)
-            target_id = deterministic_entity_uuid(target)
-            source_key = canonical_entity_key(source)
-            target_key = canonical_entity_key(target)
-            entity_to_node_id[source_key] = source_id
-            entity_to_node_id[target_key] = target_id
-
-            graph.add_node(
-                source_id,
-                label=display_entity_name(source),
-                canonical=source_key,
-                node_type="entity",
-                entity_type=graph.nodes.get(source_id, {}).get("entity_type", "other"),
-            )
-            graph.add_node(
-                target_id,
-                label=display_entity_name(target),
-                canonical=target_key,
-                node_type="entity",
-                entity_type=graph.nodes.get(target_id, {}).get("entity_type", "other"),
-            )
-            graph.add_edge(source_id, target_id, relation=label)
-            graph.add_edge(chunk.chunk_id, source_id, relation="supports_relation")
-            graph.add_edge(chunk.chunk_id, target_id, relation="supports_relation")
-
+    link_cross_document_entities(graph)
     status_callback(
         f"NetworkX graph ready: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges."
     )
@@ -977,6 +1114,67 @@ def localized_subgraph_context(
     return "\n".join(lines)
 
 
+def build_contributing_subgraph(
+    graph: nx.DiGraph,
+    cited_chunk_ids: list[str],
+    entity_to_node_id: dict[str, str],
+    query: str,
+    max_edges: int = 30,
+) -> dict[str, Any]:
+    """Extract ONLY the nodes/edges that connect the cited chunks to their
+    entities (and those entities to each other). Used for the "Why this answer"
+    explainability panel — a focused subgraph, not the full 1-hop dump.
+    """
+    seeds = set(cited_chunk_ids)
+    # Entities directly mentioned by the cited chunks.
+    entity_nodes: set[str] = set()
+    for chunk_id in cited_chunk_ids:
+        if chunk_id not in graph:
+            continue
+        for nbr in graph.successors(chunk_id):
+            if graph.nodes[nbr].get("node_type") == "entity":
+                entity_nodes.add(nbr)
+    # Query-mentioned entities help explain the linkage too.
+    entity_nodes.update(extract_query_entity_candidates(query, entity_to_node_id))
+
+    contributing = seeds | entity_nodes
+    nodes = [
+        {
+            "node_id": node_id,
+            "label": graph.nodes[node_id].get("label", node_id),
+            "node_type": graph.nodes[node_id].get("node_type", ""),
+            "entity_type": graph.nodes[node_id].get("entity_type", ""),
+        }
+        for node_id in contributing
+        if node_id in graph
+    ]
+
+    edges: list[dict[str, Any]] = []
+    for source, target, data in graph.edges(data=True):
+        if source in contributing and target in contributing:
+            edges.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "source_label": graph.nodes[source].get("label", source),
+                    "target_label": graph.nodes[target].get("label", target),
+                    "relation": data.get("relation", "related_to"),
+                }
+            )
+            if len(edges) >= max_edges:
+                break
+
+    text_lines = [
+        f"{edge['source_label']} --[{edge['relation']}]--> {edge['target_label']}"
+        for edge in edges
+    ]
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "text": "\n".join(text_lines) or "No contributing graph context found.",
+    }
+
+
 def graph_nodes_table(graph: nx.DiGraph) -> list[dict[str, Any]]:
     return [
         {
@@ -1013,55 +1211,96 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[: max_chars - 20].rstrip() + "\n...[truncated]"
 
 
-async def answer_query(
+GRACEFUL_NO_EVIDENCE = (
+    "I couldn't find enough information in the documents to answer this."
+)
+
+
+def build_sources_list(
+    ranked_chunks: list[tuple[DocumentChunk, float]],
+) -> list[dict[str, Any]]:
+    """Build the explainability 'sources' list: one entry per [S#] marker."""
+    sources: list[dict[str, Any]] = []
+    for i, (chunk, score) in enumerate(ranked_chunks):
+        sources.append(
+            {
+                "marker": f"S{i + 1}",
+                "source": chunk.source,
+                "chunk_id": chunk.chunk_id,
+                "title": chunk.title,
+                "content_type": chunk.content_type,
+                "sequence": chunk.sequence,
+                "rerank_score": float(score),
+                "snippet": truncate_text(chunk.content, 320),
+            }
+        )
+    return sources
+
+
+async def synthesize_cited_answer(
     query: str,
     index: HybridIndex,
     nim: NvidiaNIMClient,
-    min_rerank_score: float | None = None,
+    ranked_chunks: list[tuple[DocumentChunk, float]],
 ) -> dict[str, Any]:
-    ranked_chunks = await retrieve_and_rerank(
-        query,
-        index,
-        nim,
-        top_k=10,
-        final_k=3,
-        min_score=min_rerank_score,
-    )
+    """Synthesize a cited answer from already-reranked chunks.
+
+    Split out from answer_query so the adversarial evidence gate can reuse a
+    single retrieval pass instead of embedding/reranking twice.
+    """
+    sources = build_sources_list(ranked_chunks)
+    # Label chunks as [S#] so the model cites them inline (never raw chunk_ids).
     vector_context = "\n\n".join(
         [
             (
-                f"[Chunk {i + 1} | id={chunk.chunk_id} | score={score:.4f} | "
-                f"source={chunk.source}]\n{truncate_text(chunk.content, 1800)}"
+                f"[S{i + 1} | document={chunk.source} | section={chunk.title or 'n/a'} | "
+                f"score={score:.4f}]\n{truncate_text(chunk.content, 1800)}"
             )
             for i, (chunk, score) in enumerate(ranked_chunks)
         ]
     )
+    cited_chunk_ids = [chunk.chunk_id for chunk, _ in ranked_chunks]
     subgraph = localized_subgraph_context(
         index.graph,
-        seed_chunk_ids=[chunk.chunk_id for chunk, _ in ranked_chunks],
+        seed_chunk_ids=cited_chunk_ids,
         query=query,
         entity_to_node_id=index.entity_to_node_id,
         depth=1,
+    )
+    contributing_subgraph = build_contributing_subgraph(
+        index.graph, cited_chunk_ids, index.entity_to_node_id, query
+    )
+
+    distinct_sources = sorted({chunk.source for chunk, _ in ranked_chunks})
+    cross_doc_note = (
+        "The evidence spans multiple documents. Compare and contrast their claims "
+        "explicitly, and cite the document name for each claim. If sources "
+        "conflict, present both sides.\n"
+        if len(distinct_sources) > 1
+        else ""
     )
 
     prompt = f"""
 You are an enterprise Hybrid GraphRAG reasoning engine.
 
-Answer the user's question using only the supplied vector chunks and knowledge
-graph context. Be accurate, concise, and cite chunk IDs when making factual
-claims. If the evidence is insufficient, say exactly what is missing instead of
-guessing.
+Use ONLY the provided context (vector chunks + knowledge graph). If the context
+lacks the answer, say so explicitly instead of guessing. Do not speculate.
+If sources conflict, present both and cite them.
 
+Attach inline citation markers like [S1], [S2] to EVERY factual claim, where the
+number matches the labeled chunk you used. Cite the document name when relevant.
+Never print raw chunk IDs in your prose — only [S#] markers.
+{cross_doc_note}
 User question:
 {query}
 
-Top reranked vector chunks:
+Labeled vector chunks:
 {vector_context or "No vector chunks passed reranking."}
 
 Localized NetworkX graph context:
 {subgraph}
 
-Final answer:
+Final cited answer:
 """.strip()
 
     answer = await nim.chat_completion(
@@ -1076,7 +1315,316 @@ Final answer:
         "answer": answer,
         "ranked_chunks": ranked_chunks,
         "graph_context": subgraph,
+        "sources": sources,
+        "contributing_subgraph": contributing_subgraph,
     }
+
+
+async def answer_query(
+    query: str,
+    index: HybridIndex,
+    nim: NvidiaNIMClient,
+    min_rerank_score: float | None = None,
+    source_filter: str | None = None,
+) -> dict[str, Any]:
+    ranked_chunks = await retrieve_and_rerank(
+        query,
+        index,
+        nim,
+        top_k=10,
+        final_k=3,
+        min_score=min_rerank_score,
+        source_filter=source_filter,
+    )
+    return await synthesize_cited_answer(query, index, nim, ranked_chunks)
+
+
+# =============================================================================
+# Agentic Multi-Hop Reasoning
+# =============================================================================
+
+
+def _coerce_sub_questions(raw: Any) -> list[str]:
+    """Parse sub-questions defensively — items may be strings or objects."""
+    questions: list[str] = []
+    if not isinstance(raw, list):
+        return questions
+    for item in raw:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            text = str(
+                item.get("question")
+                or item.get("sub_question")
+                or item.get("text")
+                or ""
+            ).strip()
+        else:
+            text = str(item).strip()
+        if text:
+            questions.append(text)
+    return questions
+
+
+async def plan_subquestions(nim: NvidiaNIMClient, query: str) -> dict[str, Any]:
+    """Decide whether a query needs multi-hop decomposition and split it."""
+    prompt = f"""
+You are a query planner for a document QA system. Decide whether answering the
+question requires multiple reasoning hops (combining several distinct facts) or
+is a single simple lookup.
+
+Return ONLY valid JSON:
+{{"multi_hop": true|false, "sub_questions": ["...", "..."]}}
+
+Rules:
+- If the question is simple, set "multi_hop" false and "sub_questions" to [].
+- If multi-hop, list 2-4 atomic sub-questions that, answered together, resolve
+  the original question. Each sub-question must be independently retrievable.
+
+Question: {query}
+""".strip()
+    raw = await nim.chat_completion(
+        [{"role": "user", "content": prompt}],
+        model=REASONING_MODEL,
+        max_tokens=400,
+        temperature=0.0,
+        label="subquestion planning",
+    )
+    data = parse_json_object(raw)
+    sub_questions = _coerce_sub_questions(data.get("sub_questions"))
+    multi_hop = bool(data.get("multi_hop")) and len(sub_questions) >= 2
+    return {"multi_hop": multi_hop, "sub_questions": sub_questions if multi_hop else []}
+
+
+async def answer_query_agentic(
+    query: str,
+    index: HybridIndex,
+    nim: NvidiaNIMClient,
+    min_rerank_score: float | None = None,
+    source_filter: str | None = None,
+) -> dict[str, Any]:
+    """Multi-hop: decompose, answer each sub-question, then synthesize."""
+    plan = await plan_subquestions(nim, query)
+    if not plan["multi_hop"]:
+        result = await answer_query(query, index, nim, min_rerank_score, source_filter)
+        result["sub_questions"] = []
+        result["sub_answers"] = []
+        return result
+
+    sub_questions = plan["sub_questions"]
+    sub_answers: list[dict[str, Any]] = []
+    union_chunks: dict[str, tuple[DocumentChunk, float]] = {}
+
+    for sub_q in sub_questions:
+        ranked = await retrieve_and_rerank(
+            sub_q, index, nim, top_k=10, final_k=3,
+            min_score=min_rerank_score, source_filter=source_filter,
+        )
+        for chunk, score in ranked:
+            prev = union_chunks.get(chunk.chunk_id)
+            if prev is None or score > prev[1]:
+                union_chunks[chunk.chunk_id] = (chunk, score)
+
+        subgraph = localized_subgraph_context(
+            index.graph,
+            seed_chunk_ids=[c.chunk_id for c, _ in ranked],
+            query=sub_q,
+            entity_to_node_id=index.entity_to_node_id,
+            depth=1,
+        )
+        ctx = "\n\n".join(
+            f"[S{i + 1} | document={c.source}]\n{truncate_text(c.content, 1200)}"
+            for i, (c, _) in enumerate(ranked)
+        )
+        sub_prompt = f"""
+Answer this sub-question using ONLY the context. Be brief and factual. If the
+context is insufficient, say so. Cite documents by name.
+
+Sub-question: {sub_q}
+
+Context:
+{ctx or "No relevant context."}
+
+Graph context:
+{subgraph}
+""".strip()
+        sub_answer = await nim.chat_completion(
+            [{"role": "user", "content": sub_prompt}],
+            model=REASONING_MODEL,
+            max_tokens=600,
+            temperature=0.05,
+            label=f"sub-answer: {sub_q[:40]}",
+        )
+        sub_answers.append({"question": sub_q, "answer": sub_answer})
+
+    ranked_chunks = sorted(union_chunks.values(), key=lambda it: it[1], reverse=True)
+    union_subgraph = localized_subgraph_context(
+        index.graph,
+        seed_chunk_ids=[c.chunk_id for c, _ in ranked_chunks],
+        query=query,
+        entity_to_node_id=index.entity_to_node_id,
+        depth=1,
+    )
+
+    synthesis_block = "\n\n".join(
+        f"Sub-question: {sa['question']}\nFinding: {sa['answer']}" for sa in sub_answers
+    )
+    final_prompt = f"""
+You are synthesizing a final answer from intermediate findings for a multi-hop
+question. Use ONLY the findings below. Preserve [S#] and document-name citations.
+If findings conflict, note the conflict. Do not speculate.
+
+Original question: {query}
+
+Intermediate findings:
+{synthesis_block}
+
+Final cited answer:
+""".strip()
+    answer = await nim.chat_completion(
+        [{"role": "user", "content": final_prompt}],
+        model=REASONING_MODEL,
+        max_tokens=1400,
+        temperature=0.05,
+        timeout=160.0,
+        label="agentic final synthesis",
+    )
+
+    return {
+        "answer": answer,
+        "sub_questions": sub_questions,
+        "sub_answers": sub_answers,
+        "ranked_chunks": ranked_chunks,
+        "graph_context": union_subgraph,
+        "sources": build_sources_list(ranked_chunks),
+        "contributing_subgraph": build_contributing_subgraph(
+            index.graph, [c.chunk_id for c, _ in ranked_chunks],
+            index.entity_to_node_id, query,
+        ),
+    }
+
+
+# =============================================================================
+# Adversarial Robustness
+# =============================================================================
+
+
+async def classify_query(nim: NvidiaNIMClient, query: str) -> dict[str, str]:
+    """Classify a query for adversarial robustness handling."""
+    prompt = f"""
+Classify the user's question for a document-grounded QA system. Return ONLY JSON:
+{{"category": "answerable|ambiguous|unanswerable|out_of_scope|trick", "reason": "..."}}
+
+Definitions:
+- answerable: a clear, factual question likely answerable from documents.
+- ambiguous: under-specified; needs clarification before answering.
+- unanswerable: clear but likely not covered by the documents.
+- out_of_scope: unrelated to document analysis (e.g. chit-chat, general world facts).
+- trick: contains false premises, leading assumptions, or attempts to elicit fabrication.
+
+Question: {query}
+""".strip()
+    raw = await nim.chat_completion(
+        [{"role": "user", "content": prompt}],
+        model=REASONING_MODEL,
+        max_tokens=200,
+        temperature=0.0,
+        label="query classification",
+    )
+    data = parse_json_object(raw)
+    category = str(data.get("category", "answerable")).strip().lower()
+    valid = {"answerable", "ambiguous", "unanswerable", "out_of_scope", "trick"}
+    if category not in valid:
+        category = "answerable"
+    return {"category": category, "reason": str(data.get("reason", "")).strip()}
+
+
+async def answer_query_robust(
+    query: str,
+    index: HybridIndex,
+    nim: NvidiaNIMClient,
+    min_rerank_score: float | None = None,
+    source_filter: str | None = None,
+    agentic: bool = False,
+    evidence_threshold: float | None = None,
+) -> dict[str, Any]:
+    """Full guarded query path: retrieve -> evidence gate -> classify -> answer.
+
+    Evidence-first by design: we retrieve BEFORE trusting the classifier. The
+    classifier (and the optional rerank-score gate) can only *refuse* when the
+    retrieved evidence is also weak — otherwise a question that is clearly
+    answerable from the documents is always answered, even if the classifier
+    mislabels it. The rerank model returns logits that are often negative for
+    relevant chunks, so the score gate is OFF (None) unless the user opts in.
+
+    Returns a dict that always includes 'status', 'category', 'reason',
+    'top_score', plus the standard answer keys when an answer is produced.
+    """
+    # Retrieve first. Note: we do NOT pass the gate value as min_score here —
+    # filtering retrieval by an absolute logit threshold would silently drop
+    # relevant chunks that happen to have negative rerank logits.
+    ranked_chunks = await retrieve_and_rerank(
+        query, index, nim, top_k=10, final_k=3,
+        min_score=None, source_filter=source_filter,
+    )
+    top_score = ranked_chunks[0][1] if ranked_chunks else None
+
+    classification = await classify_query(nim, query)
+    category = classification["category"]
+    base = {
+        "category": category,
+        "reason": classification["reason"],
+        "top_score": top_score,
+        "ranked_chunks": ranked_chunks,
+        "sources": build_sources_list(ranked_chunks),
+        "graph_context": "",
+        "contributing_subgraph": {"nodes": [], "edges": [], "text": ""},
+        "sub_questions": [],
+        "sub_answers": [],
+    }
+
+    # Does the retrieval actually clear the (optional) evidence bar?
+    has_evidence = bool(ranked_chunks) and (
+        evidence_threshold is None
+        or top_score is None
+        or top_score >= evidence_threshold
+    )
+
+    # Hard evidence gate: no usable evidence -> never call the answer LLM.
+    if not has_evidence:
+        base.update(status="no_evidence", answer=GRACEFUL_NO_EVIDENCE)
+        return base
+
+    # The classifier can only refuse when evidence is ALSO weak (handled above).
+    # With strong evidence present we answer regardless of an out_of_scope/trick
+    # guess, because the documents demonstrably contain relevant content.
+    if category == "ambiguous":
+        top_entities = [
+            index.graph.nodes[node_id].get("label", "")
+            for node_id in extract_query_entity_candidates(query, index.entity_to_node_id)
+        ]
+        hint = ", ".join(e for e in top_entities[:4] if e)
+        # Only ask to clarify if we genuinely lack a strong lead; otherwise answer.
+        if not hint:
+            base.update(
+                status="clarify",
+                answer=(
+                    "Your question is a bit ambiguous. Could you clarify what "
+                    "you're asking about?"
+                ),
+            )
+            return base
+
+    if agentic:
+        result = await answer_query_agentic(query, index, nim, None, source_filter)
+    else:
+        result = await synthesize_cited_answer(query, index, nim, ranked_chunks)
+
+    result.update(status="answered", category=category,
+                  reason=classification["reason"], top_score=top_score)
+    result.setdefault("sub_questions", [])
+    result.setdefault("sub_answers", [])
+    return result
 
 
 # =============================================================================
@@ -1122,12 +1670,18 @@ async def build_hybrid_index(
     concurrency_limit: int = DEFAULT_CONCURRENCY_LIMIT,
     reuse_existing_outputs: bool = False,
     status_callback: StatusCallback = default_status,
+    existing_index: HybridIndex | None = None,
+    source_name: str | None = None,
 ) -> HybridIndex:
     nim = NvidiaNIMClient(
         api_key=api_key,
         concurrency_limit=concurrency_limit,
         status_callback=status_callback,
     )
+
+    # Derive a stable logical document name for cross-document scoping.
+    if source_name is None:
+        source_name = Path(pdf_path).name if pdf_path is not None else "document"
 
     chart_results: list[dict[str, str]] = []
     if pdf_path is not None and not reuse_existing_outputs:
@@ -1163,14 +1717,17 @@ async def build_hybrid_index(
         report_path=WORKSPACE / REPORT_FILENAME,
         text_chunk_chars=text_chunk_chars,
         text_chunk_overlap=text_chunk_overlap,
+        source_name=source_name,
     )
 
     status_callback("ChromaDB Vectorizing")
+    # Additive when extending an existing corpus; fresh otherwise.
     collection = await vectorize_chunks(
         chunks=chunks,
         nim=nim,
-        reset_collection=True,
+        reset_collection=existing_index is None,
         status_callback=status_callback,
+        collection=existing_index.collection if existing_index is not None else None,
     )
 
     status_callback("NetworkX Graph Construction")
@@ -1178,7 +1735,34 @@ async def build_hybrid_index(
         chunks=chunks,
         nim=nim,
         status_callback=status_callback,
+        graph=existing_index.graph if existing_index is not None else None,
+        entity_to_node_id=(
+            existing_index.entity_to_node_id if existing_index is not None else None
+        ),
+        source_name=source_name,
     )
+
+    if existing_index is not None:
+        existing_index.chunks.extend(chunks)
+        existing_index.collection = collection
+        existing_index.graph = graph
+        existing_index.entity_to_node_id = entity_to_node_id
+        existing_index.chart_results.extend(chart_results)
+        existing_index.markdown_text = (
+            f"{existing_index.markdown_text}\n\n# === {source_name} ===\n\n{markdown_text}"
+            if existing_index.markdown_text
+            else markdown_text
+        )
+        existing_index.vision_report = (
+            f"{existing_index.vision_report}\n\n{vision_report}"
+            if existing_index.vision_report
+            else vision_report
+        )
+        if source_name not in existing_index.sources:
+            existing_index.sources.append(source_name)
+        existing_index.markdown_by_source[source_name] = markdown_text
+        existing_index.vision_by_source[source_name] = vision_report
+        return existing_index
 
     return HybridIndex(
         chunks=chunks,
@@ -1188,7 +1772,205 @@ async def build_hybrid_index(
         chart_results=chart_results,
         markdown_text=markdown_text,
         vision_report=vision_report,
+        sources=[source_name],
+        markdown_by_source={source_name: markdown_text},
+        vision_by_source={source_name: vision_report},
     )
+
+
+# =============================================================================
+# Real-Time / Streaming Ingestion (fast-path / slow-path)
+# =============================================================================
+
+
+def chunk_markdown_text(
+    markdown_text: str,
+    source_name: str,
+    start_sequence: int = 0,
+    text_chunk_chars: int = DEFAULT_TEXT_CHUNK_CHARS,
+    text_chunk_overlap: int = DEFAULT_TEXT_CHUNK_OVERLAP,
+) -> tuple[list[DocumentChunk], int]:
+    """Build text DocumentChunks from an in-memory markdown string."""
+    chunks: list[DocumentChunk] = []
+    sequence = start_sequence
+    for title, body in split_markdown_sections(markdown_text):
+        for window in sliding_text_windows(body, max(300, text_chunk_chars), text_chunk_overlap):
+            sequence += 1
+            content = f"{title}\n\n{window}".strip()
+            chunks.append(
+                DocumentChunk(
+                    chunk_id=stable_chunk_id(f"{source_name}:text", sequence, content),
+                    source=source_name,
+                    content_type="text",
+                    content=content,
+                    title=title,
+                    sequence=sequence,
+                )
+            )
+    return chunks, sequence
+
+
+async def stream_ingest(
+    pdf_path: str | Path,
+    nim: NvidiaNIMClient,
+    on_event: Callable[..., None],
+    source_name: str | None = None,
+    index: HybridIndex | None = None,
+    chunk_size_pages: int = DEFAULT_CHUNK_SIZE_LIMIT,
+    text_chunk_chars: int = DEFAULT_TEXT_CHUNK_CHARS,
+    text_chunk_overlap: int = DEFAULT_TEXT_CHUNK_OVERLAP,
+) -> HybridIndex:
+    """Progressive ingestion: queryable early, graph enriches eventually.
+
+    FAST PATH: as Docling yields each page range, build text chunks, embed and
+    upsert them into Chroma immediately so they are searchable within ~1 round
+    trip. SLOW PATH: chunks are pushed onto a bounded queue; a pool of workers
+    runs extract_graph_facts and incrementally updates the shared DiGraph.
+
+    Emits events via on_event(kind, **info) where kind is one of:
+    "indexed", "graph_updated", "done".
+    """
+    ensure_dependency("docling", DocumentConverter)
+    ensure_dependency("pypdf", PdfReader)
+    pdf_path = Path(pdf_path)
+    if source_name is None:
+        source_name = pdf_path.name
+
+    # Reuse corpus state when extending; otherwise start fresh (additive=False).
+    if index is not None:
+        collection = index.collection
+        graph = index.graph
+        entity_to_node_id = index.entity_to_node_id
+    else:
+        collection = init_chroma_collection(reset=True)
+        graph = nx.DiGraph()
+        entity_to_node_id = {}
+
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_table_structure = True
+    pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
+    pipeline_options.generate_picture_images = False
+    pipeline_options.do_ocr = False
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+    )
+
+    page_chunks = generate_dynamic_chunks(pdf_path, chunk_size=chunk_size_pages)
+
+    queue: asyncio.Queue[DocumentChunk | None] = asyncio.Queue(maxsize=64)
+    graph_stats = {"entities": 0, "indexed": 0}
+    all_chunks: list[DocumentChunk] = []
+    markdown_parts: list[str] = []
+
+    async def graph_worker() -> None:
+        while True:
+            chunk = await queue.get()
+            try:
+                if chunk is None:
+                    return
+                async with nim.semaphore:
+                    facts = await nim.extract_graph_facts(chunk)
+                apply_graph_facts(graph, entity_to_node_id, chunk, facts, source_name)
+                graph_stats["entities"] = sum(
+                    1 for _, d in graph.nodes(data=True) if d.get("node_type") == "entity"
+                )
+                on_event(
+                    "graph_updated",
+                    chunk_id=chunk.chunk_id,
+                    entities=graph_stats["entities"],
+                    edges=graph.number_of_edges(),
+                )
+            finally:
+                queue.task_done()
+
+    n_workers = max(1, nim.semaphore._value)  # concurrency limit
+    workers = [asyncio.create_task(graph_worker()) for _ in range(n_workers)]
+
+    sequence = 0
+    total_ranges = len(page_chunks)
+    try:
+        for range_idx, (start_page, end_page) in enumerate(page_chunks, start=1):
+            # Docling conversion is blocking; run it off the event loop.
+            doc = await asyncio.to_thread(
+                lambda s=start_page, e=end_page: converter.convert(
+                    str(pdf_path), page_range=(s, e)
+                ).document
+            )
+            md = doc.export_to_markdown()
+            markdown_parts.append(md)
+            del doc
+            gc.collect()
+
+            new_chunks, sequence = chunk_markdown_text(
+                md, source_name, start_sequence=sequence,
+                text_chunk_chars=text_chunk_chars, text_chunk_overlap=text_chunk_overlap,
+            )
+            if not new_chunks:
+                continue
+
+            # FAST PATH: embed + upsert so chunks are immediately searchable.
+            embeddings = await nim.embed_texts([c.content for c in new_chunks])
+            collection.upsert(
+                ids=[c.chunk_id for c in new_chunks],
+                embeddings=embeddings,
+                documents=[c.content for c in new_chunks],
+                metadatas=[c.as_metadata() for c in new_chunks],
+            )
+            for chunk in new_chunks:
+                add_chunk_node(graph, chunk)
+                all_chunks.append(chunk)
+                graph_stats["indexed"] += 1
+                on_event(
+                    "indexed",
+                    chunk_id=chunk.chunk_id,
+                    indexed=graph_stats["indexed"],
+                    page_range=f"{start_page}-{end_page}",
+                    range_progress=f"{range_idx}/{total_ranges}",
+                )
+                # SLOW PATH: defer graph extraction to the worker pool.
+                await queue.put(chunk)
+    finally:
+        for _ in workers:
+            await queue.put(None)
+        await asyncio.gather(*workers, return_exceptions=True)
+
+    link_cross_document_entities(graph)
+    markdown_text = "\n\n".join(markdown_parts)
+
+    if index is not None:
+        index.chunks.extend(all_chunks)
+        index.collection = collection
+        index.graph = graph
+        index.entity_to_node_id = entity_to_node_id
+        index.markdown_text = (
+            f"{index.markdown_text}\n\n# === {source_name} ===\n\n{markdown_text}"
+            if index.markdown_text else markdown_text
+        )
+        if source_name not in index.sources:
+            index.sources.append(source_name)
+        index.markdown_by_source[source_name] = markdown_text
+        result_index = index
+    else:
+        result_index = HybridIndex(
+            chunks=all_chunks,
+            collection=collection,
+            graph=graph,
+            entity_to_node_id=entity_to_node_id,
+            chart_results=[],
+            markdown_text=markdown_text,
+            vision_report="",
+            sources=[source_name],
+            markdown_by_source={source_name: markdown_text},
+            vision_by_source={source_name: ""},
+        )
+
+    on_event(
+        "done",
+        indexed=graph_stats["indexed"],
+        entities=graph_stats["entities"],
+        edges=graph.number_of_edges(),
+    )
+    return result_index
 
 
 # =============================================================================
@@ -1203,6 +1985,83 @@ _PHASE_ICON: dict[str, str] = {
     "failed": "❌",
     "skipped": "⏭️",
 }
+
+
+def render_contributing_graph(subgraph: dict[str, Any], key: str) -> None:
+    """Visualize the contributing subgraph (streamlit-agraph) with a fallback."""
+    nodes = subgraph.get("nodes", [])
+    edges = subgraph.get("edges", [])
+    if not nodes:
+        st.caption("No contributing graph context for this answer.")
+        return
+
+    if agraph is not None:
+        type_colors = {"chunk": "#4C9AFF", "entity": "#FF8B00", "document": "#36B37E"}
+        a_nodes = [
+            AGraphNode(
+                id=n["node_id"],
+                label=truncate_text(str(n["label"]), 40),
+                color=type_colors.get(n.get("node_type", ""), "#999999"),
+                size=18 if n.get("node_type") == "entity" else 14,
+            )
+            for n in nodes
+        ]
+        a_edges = [
+            AGraphEdge(source=e["source"], target=e["target"], label=e["relation"])
+            for e in edges
+        ]
+        config = AGraphConfig(width=700, height=420, directed=True,
+                              physics=True, hierarchical=False)
+        agraph(nodes=a_nodes, edges=a_edges, config=config)
+    else:
+        st.info("Install `streamlit-agraph` for interactive graph viz. Showing edges as text.")
+        st.code(subgraph.get("text", ""))
+
+
+def render_answer_result(result: dict[str, Any], key: str) -> None:
+    """Render an answer with adversarial status, [S#] sources, and why-graph."""
+    status = result.get("status", "answered")
+    category = result.get("category")
+    top_score = result.get("top_score")
+
+    if category:
+        confidence = f"{top_score:.4f}" if isinstance(top_score, (int, float)) else "n/a"
+        badge = {
+            "answered": "✅", "clarify": "❓", "no_evidence": "🚫",
+            "refused": "⛔",
+        }.get(status, "ℹ️")
+        st.caption(
+            f"{badge} Query category: **{category}** · top rerank score (confidence): "
+            f"**{confidence}**"
+        )
+
+    st.markdown(result.get("answer", ""))
+
+    if status != "answered":
+        return
+
+    sub_questions = result.get("sub_questions") or []
+    sub_answers = result.get("sub_answers") or []
+    if sub_questions:
+        with st.expander(f"🧩 Multi-hop reasoning ({len(sub_questions)} sub-questions)"):
+            for sa in sub_answers:
+                st.markdown(f"**{sa['question']}**")
+                st.write(sa["answer"])
+
+    sources = result.get("sources") or []
+    if sources:
+        with st.expander(f"📑 Sources ({len(sources)})"):
+            for s in sources:
+                st.markdown(
+                    f"**[{s['marker']}]** · `{s['source']}` · "
+                    f"{s.get('title') or s.get('content_type', '')} · "
+                    f"seq {s.get('sequence')} · score {s['rerank_score']:.4f}"
+                )
+                st.caption(s["snippet"])
+
+    contributing = result.get("contributing_subgraph") or {}
+    with st.expander("🔍 Why this answer (contributing graph)"):
+        render_contributing_graph(contributing, key=key)
 
 
 def run_streamlit_app() -> None:
@@ -1228,104 +2087,137 @@ def run_streamlit_app() -> None:
         if env_key_present and not api_key:
             st.caption("Using NVIDIA_API_KEY from .env.")
 
+        ingestion_mode = st.radio(
+            "Ingestion mode",
+            ["Batch (full multimodal)", "Streaming (progressive)"],
+            help=(
+                "Batch parses charts/tables via the VLM. Streaming embeds text "
+                "chunks immediately (queryable early) and enriches the graph in "
+                "the background."
+            ),
+        )
         chunk_size_pages = st.slider("Docling pages per chunk", 1, 25, DEFAULT_CHUNK_SIZE_LIMIT)
         text_chunk_chars = st.slider("Text chunk size", 600, 4000, DEFAULT_TEXT_CHUNK_CHARS, 100)
         concurrency_limit = st.slider("NVIDIA API concurrency ceiling", 1, 8, DEFAULT_CONCURRENCY_LIMIT)
-        reuse_existing = st.checkbox(
-            "Reuse existing parsed_text_clean.md and nvidia_vision_report.md",
-            value=(WORKSPACE / MD_FILENAME).exists(),
+        gate_enabled = st.checkbox(
+            "Enable strict evidence gate",
+            value=False,
+            help="When on, if the top reranked chunk scores below the threshold "
+                 "the answer LLM is NOT called (prevents hallucination). Off by "
+                 "default because the reranker emits negative logits for many "
+                 "relevant chunks.",
+        )
+        evidence_threshold = (
+            st.slider("Evidence gate threshold (min rerank score)", -10.0, 10.0, 0.0, 0.5)
+            if gate_enabled
+            else None
         )
 
-    uploaded_pdf = st.file_uploader("Upload a PDF", type=["pdf"])
+        if st.button("🗑️ Clear corpus", use_container_width=True):
+            try:
+                init_chroma_collection(reset=True)
+            except Exception:
+                pass
+            st.session_state.hybrid_index = None
+            st.session_state.messages = []
+            st.success("Corpus cleared.")
 
     if "hybrid_index" not in st.session_state:
         st.session_state.hybrid_index = None
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    can_build_from_existing = reuse_existing and (WORKSPACE / MD_FILENAME).exists()
-    build_disabled = uploaded_pdf is None and not can_build_from_existing
+    uploaded_pdfs = st.file_uploader(
+        "Upload one or more PDFs", type=["pdf"], accept_multiple_files=True
+    )
 
-    if st.button("Build Hybrid RAG Index", type="primary", disabled=build_disabled):
-        # Define state and UI components BEFORE the try block so the except
-        # handler can safely reference them regardless of where the error lands.
-        phase_state: dict[str, str] = {phase: "pending" for phase in PIPELINE_PHASES}
+    existing: HybridIndex | None = st.session_state.hybrid_index
+    if existing is not None and existing.sources:
+        st.caption("Corpus: " + ", ".join(f"`{s}`" for s in existing.source_names()))
 
-        st.markdown("**Live Status Tracking**")
-        phase_boxes = st.empty()
+    build_disabled = not uploaded_pdfs
+    streaming = ingestion_mode.startswith("Streaming")
+    button_label = "Add to Corpus" if existing is not None else "Build Hybrid RAG Index"
 
-        def render_phase_tracker() -> None:
-            with phase_boxes.container():
-                cols = st.columns(len(PIPELINE_PHASES))
-                for col, phase in zip(cols, PIPELINE_PHASES):
-                    state = phase_state[phase]
-                    icon = _PHASE_ICON.get(state, "⬜")
-                    label = f"{icon} **{phase}**\n\n{state.upper()}"
-                    if state == "running":
-                        col.info(label)
-                    elif state == "done":
-                        col.success(label)
-                    elif state == "failed":
-                        col.error(label)
-                    elif state == "skipped":
-                        col.warning(label)
-                    else:
-                        col.markdown(label)
-
-        render_phase_tracker()
-
+    if st.button(button_label, type="primary", disabled=build_disabled):
         try:
             resolved_key = get_api_key(api_key)
-            pdf_path = copy_uploaded_pdf(uploaded_pdf) if uploaded_pdf is not None else None
+            st.session_state.nim_key = resolved_key
+            st.session_state.concurrency_limit = concurrency_limit
+            index = st.session_state.hybrid_index
 
-            with st.status("Starting pipeline...", expanded=True) as status:
-                def ui_status(message: str) -> None:
-                    for phase in PIPELINE_PHASES:
-                        if message.startswith(phase):
-                            if "reused existing" in message:
-                                phase_state[phase] = "skipped"
-                            else:
-                                for previous_phase in PIPELINE_PHASES:
-                                    if previous_phase == phase:
-                                        break
-                                    if phase_state[previous_phase] == "running":
-                                        phase_state[previous_phase] = "done"
-                                phase_state[phase] = "running"
-                            status.update(label=phase, state="running")
-                            render_phase_tracker()
-                            break
-                    status.write(message)
+            for uploaded_pdf in uploaded_pdfs:
+                pdf_path = copy_uploaded_pdf(uploaded_pdf)
+                source_name = uploaded_pdf.name
 
-                index = asyncio.run(
-                    build_hybrid_index(
-                        api_key=resolved_key,
-                        pdf_path=pdf_path,
-                        chunk_size_pages=chunk_size_pages,
-                        text_chunk_chars=text_chunk_chars,
-                        text_chunk_overlap=min(300, text_chunk_chars // 4),
-                        concurrency_limit=concurrency_limit,
-                        reuse_existing_outputs=bool(pdf_path is None and can_build_from_existing),
-                        status_callback=ui_status,
-                    )
-                )
-                st.session_state.hybrid_index = index
-                st.session_state.nim_key = resolved_key
-                st.session_state.concurrency_limit = concurrency_limit
-                for phase in PIPELINE_PHASES:
-                    if phase_state[phase] == "running":
-                        phase_state[phase] = "done"
-                render_phase_tracker()
-                status.update(label="Pipeline complete", state="complete")
+                with st.status(f"Ingesting {source_name} ...", expanded=True) as status:
+                    if streaming:
+                        nim = NvidiaNIMClient(
+                            api_key=resolved_key,
+                            concurrency_limit=concurrency_limit,
+                            status_callback=lambda _m: None,
+                        )
+
+                        def on_event(kind: str, **info: Any) -> None:
+                            if kind == "indexed":
+                                status.update(
+                                    label=f"{source_name}: indexed "
+                                    f"{info['indexed']} chunks (pages {info['page_range']})",
+                                    state="running",
+                                )
+                                status.write(
+                                    f"🔎 Indexed chunk {info['chunk_id'][:18]} "
+                                    f"({info['range_progress']} ranges) — queryable now"
+                                )
+                            elif kind == "graph_updated":
+                                status.write(
+                                    f"🕸️ graph: {info['entities']} entities, "
+                                    f"{info['edges']} edges"
+                                )
+                            elif kind == "done":
+                                status.write(
+                                    f"✅ {info['indexed']} chunks · "
+                                    f"{info['entities']} entities · {info['edges']} edges"
+                                )
+
+                        index = run_async(
+                            stream_ingest(
+                                pdf_path=pdf_path,
+                                nim=nim,
+                                on_event=on_event,
+                                source_name=source_name,
+                                index=index,
+                                chunk_size_pages=chunk_size_pages,
+                                text_chunk_chars=text_chunk_chars,
+                                text_chunk_overlap=min(300, text_chunk_chars // 4),
+                            )
+                        )
+                    else:
+                        def ui_status(message: str) -> None:
+                            status.update(label=f"{source_name}: {message}", state="running")
+                            status.write(message)
+
+                        index = run_async(
+                            build_hybrid_index(
+                                api_key=resolved_key,
+                                pdf_path=pdf_path,
+                                chunk_size_pages=chunk_size_pages,
+                                text_chunk_chars=text_chunk_chars,
+                                text_chunk_overlap=min(300, text_chunk_chars // 4),
+                                concurrency_limit=concurrency_limit,
+                                status_callback=ui_status,
+                                existing_index=index,
+                                source_name=source_name,
+                            )
+                        )
+                    st.session_state.hybrid_index = index
+                    status.update(label=f"{source_name} ingested", state="complete")
         except Exception as exc:
-            for phase in PIPELINE_PHASES:
-                if phase_state[phase] == "running":
-                    phase_state[phase] = "failed"
-            render_phase_tracker()
             st.error(f"Pipeline failed: {exc}")
 
-    index: HybridIndex | None = st.session_state.hybrid_index
+    index = st.session_state.hybrid_index
     if index is None:
-        st.info("Upload a PDF or reuse existing parsed outputs, then build the Hybrid RAG index.")
+        st.info("Upload one or more PDFs, then build the Hybrid RAG index.")
         return
 
     tab_chat, tab_context, tab_graph = st.tabs(
@@ -1334,36 +2226,45 @@ def run_streamlit_app() -> None:
 
     with tab_chat:
         st.caption(
-            "Hybrid query path: ChromaDB top-10 retrieval -> NVIDIA rerank top-3 -> "
-            "NetworkX local subgraph -> Llama 4 Maverick answer synthesis."
+            "Hybrid query path: ChromaDB retrieval -> NVIDIA rerank -> evidence gate -> "
+            "NetworkX subgraph -> Llama 4 Maverick cited synthesis."
         )
+
+        controls = st.columns([1.4, 1, 1])
+        source_options = ["All documents", *index.source_names()]
+        scope = controls[0].selectbox("Scope", source_options)
+        source_filter = None if scope == "All documents" else scope
+        agentic = controls[1].toggle("Agentic multi-hop", value=False)
+
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        user_query = st.chat_input("Ask a question about the indexed document")
+        user_query = st.chat_input("Ask a question about the indexed documents")
         if user_query:
             st.session_state.messages.append({"role": "user", "content": user_query})
             with st.chat_message("user"):
                 st.markdown(user_query)
 
             with st.chat_message("assistant"):
-                with st.spinner("Retrieving vector chunks, expanding graph context, and reasoning..."):
+                with st.spinner("Classifying, retrieving, expanding graph, and reasoning..."):
                     try:
                         nim = NvidiaNIMClient(
                             api_key=st.session_state.get("nim_key") or get_api_key(api_key),
                             concurrency_limit=st.session_state.get("concurrency_limit", DEFAULT_CONCURRENCY_LIMIT),
                             status_callback=lambda _: None,
                         )
-                        result = asyncio.run(answer_query(user_query, index, nim))
-                        st.markdown(result["answer"])
-                        with st.expander("Retrieval details"):
-                            for chunk, score in result["ranked_chunks"]:
-                                st.write(f"{chunk.chunk_id} | score={score:.4f} | {chunk.source}")
-                                st.caption(truncate_text(chunk.content, 500))
-                            st.code(result["graph_context"])
+                        result = run_async(
+                            answer_query_robust(
+                                user_query, index, nim,
+                                source_filter=source_filter,
+                                agentic=agentic,
+                                evidence_threshold=evidence_threshold,
+                            )
+                        )
+                        render_answer_result(result, key=f"msg_{len(st.session_state.messages)}")
                         st.session_state.messages.append(
-                            {"role": "assistant", "content": result["answer"]}
+                            {"role": "assistant", "content": result.get("answer", "")}
                         )
                     except Exception as exc:
                         error_msg = f"Answer generation failed: {exc}"
@@ -1373,18 +2274,23 @@ def run_streamlit_app() -> None:
                         )
 
     with tab_context:
+        doc_scope = st.selectbox(
+            "Document", index.source_names(), key="context_scope"
+        )
+        md = index.markdown_by_source.get(doc_scope, index.markdown_text)
+        vision = index.vision_by_source.get(doc_scope, index.vision_report)
         left, right = st.columns([1.05, 0.95], gap="large")
         with left:
             st.subheader("Parsed Markdown")
             st.text_area(
                 "Raw text markdown",
-                value=index.markdown_text or "No markdown text available.",
+                value=md or "No markdown text available.",
                 height=700,
                 label_visibility="collapsed",
             )
         with right:
             st.subheader("Extracted Charts and Vision Descriptions")
-            entries = parse_vision_report(index.vision_report)
+            entries = parse_vision_report(vision)
             if not entries:
                 st.info("No chart summaries available.")
             for image_file, summary in entries:

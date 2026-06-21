@@ -6,4 +6,4 @@ pandas
 python-dotenv
 pypdf
 streamlit
-nest_asyncio
+streamlit-agraph
