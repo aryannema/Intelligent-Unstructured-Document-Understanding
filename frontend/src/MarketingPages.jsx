@@ -291,7 +291,7 @@ export const LandingPage = ({ setView, isLightMode, setIsLightMode }) => {
             <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#D69A2D]/30 bg-[#D69A2D]/12">
               <BrainCircuit size={19} className="text-[#D69A2D]" />
             </span>
-            <span className="text-lg font-bold tracking-tight">DocuMind</span>
+            <span className="text-lg font-bold tracking-tight">EvidentAI</span>
           </button>
           <div className="flex items-center gap-2">
             <button
@@ -424,7 +424,7 @@ export const LandingPage = ({ setView, isLightMode, setIsLightMode }) => {
             <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#D69A2D]/30 bg-[#D69A2D]/10">
               <BrainCircuit size={17} className="text-[#D69A2D]" />
             </span>
-            DocuMind
+            EvidentAI
           </div>
           <div className="flex flex-wrap gap-5">
             <span>Security</span>
@@ -432,7 +432,7 @@ export const LandingPage = ({ setView, isLightMode, setIsLightMode }) => {
             <span>Docs</span>
             <span>Contact</span>
           </div>
-          <span>2026 DocuMind. Enterprise document intelligence.</span>
+          <span>2026 EvidentAI. Enterprise document intelligence.</span>
         </div>
       </footer>
 
@@ -532,7 +532,7 @@ export const LoginPage = ({ setView, isLightMode, setIsLightMode }) => {
             </button>
             <div className={`mb-8 inline-flex items-center gap-2 rounded-full border ${theme.border} ${theme.surface} px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] ${theme.muted}`}>
               <span className="h-1.5 w-1.5 rounded-full bg-[#D69A2D]" />
-              DocuMind Workspace
+              EvidentAI Workspace
             </div>
             <h1 className={`text-5xl font-semibold leading-[1.02] tracking-tight xl:text-6xl ${theme.text}`}>Decode Intelligence From Every Document</h1>
             <p className={`mt-6 text-lg leading-8 ${theme.muted}`}>Transform unstructured information into connected knowledge with AI-powered document understanding.</p>
@@ -591,7 +591,7 @@ export const LoginPage = ({ setView, isLightMode, setIsLightMode }) => {
                   <BrainCircuit size={24} />
                 </div>
                 <h2 className={`text-3xl font-semibold tracking-tight ${theme.text}`}>{isSignUp ? 'Create your workspace' : 'Welcome back'}</h2>
-                <p className={`mt-2 text-sm leading-6 ${theme.muted}`}>Enter DocuMind's secure document intelligence workspace.</p>
+                <p className={`mt-2 text-sm leading-6 ${theme.muted}`}>Enter EvidentAI's secure document intelligence workspace.</p>
               </div>
 
               {error && (

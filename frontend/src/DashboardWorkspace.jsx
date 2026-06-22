@@ -548,9 +548,9 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [processingDetailsOpen, setProcessingDetailsOpen] = useState({});
-  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('documind-left-collapsed') === 'true');
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('EvidentAI-left-collapsed') === 'true');
   const [rightCollapsed, setRightCollapsed] = useState(() => {
-    const stored = localStorage.getItem('documind-right-collapsed');
+    const stored = localStorage.getItem('EvidentAI-right-collapsed');
     if (stored) return stored === 'true';
     return window.innerWidth < 1100;
   });
@@ -558,11 +558,11 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
   const textareaRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem('documind-left-collapsed', String(leftCollapsed));
+    localStorage.setItem('EvidentAI-left-collapsed', String(leftCollapsed));
   }, [leftCollapsed]);
 
   useEffect(() => {
-    localStorage.setItem('documind-right-collapsed', String(rightCollapsed));
+    localStorage.setItem('EvidentAI-right-collapsed', String(rightCollapsed));
   }, [rightCollapsed]);
 
   useEffect(() => {
@@ -866,7 +866,7 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: `${theme.accent}16`, color: theme.accent }}>
               <BrainCircuit size={19} />
             </span>
-            {!leftCollapsed && <span className="truncate text-sm font-semibold">DocuMind</span>}
+            {!leftCollapsed && <span className="truncate text-sm font-semibold">EvidentAI</span>}
           </button>
           {!leftCollapsed && (
             <IconButton
@@ -1026,7 +1026,7 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
                     </div>
                     <h2 className="text-3xl font-semibold tracking-tight">What would you like to understand?</h2>
                     <p className="mx-auto mt-3 max-w-xl text-base leading-7" style={{ color: theme.secondary }}>
-                      Upload documents or start with a command. DocuMind will connect sources, citations, and reasoning as the conversation develops.
+                      Upload documents or start with a command. EvidentAI will connect sources, citations, and reasoning as the conversation develops.
                     </p>
                     <div className="mt-8 grid gap-3 sm:grid-cols-2">
                       {quickActions.map(([label, command]) => (
@@ -1054,7 +1054,7 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
                     >
                       <div className={`max-w-[82%] ${msg.sender === 'user' ? 'text-right' : 'text-left'}`}>
                         <div className="mb-2 text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: theme.secondary }}>
-                          {msg.sender === 'user' ? 'You' : 'DocuMind'}
+                          {msg.sender === 'user' ? 'You' : 'EvidentAI'}
                         </div>
                         <div
                           className="rounded-3xl border px-5 py-4 text-[15px] leading-7 shadow-sm"
