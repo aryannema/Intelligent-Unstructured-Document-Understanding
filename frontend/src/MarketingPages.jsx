@@ -318,10 +318,6 @@ export const LandingPage = ({ setView, isLightMode, setIsLightMode }) => {
         <DotGridLayer theme={theme} opacity={1} />
         <div className="relative z-10 mx-auto grid max-w-7xl items-center gap-12 lg:min-h-[calc(100vh-8rem)] lg:grid-cols-[0.92fr_1.08fr]">
           <FadeReveal className="max-w-3xl">
-            <div className={`mb-6 inline-flex items-center gap-2 rounded-full border ${theme.border} ${theme.surface} px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] ${theme.muted}`}>
-              <span className="h-1.5 w-1.5 rounded-full bg-[#D69A2D]" />
-              Enterprise document intelligence
-            </div>
             <h1 className={`max-w-4xl text-5xl font-semibold leading-[0.98] tracking-tight sm:text-6xl lg:text-7xl ${theme.text}`}>
               Turn Documents Into Connected Intelligence
             </h1>
@@ -335,12 +331,6 @@ export const LandingPage = ({ setView, isLightMode, setIsLightMode }) => {
               >
                 Start Analyzing <ArrowRight size={19} />
               </MagneticButton>
-              <button
-                onClick={() => setShowDemo(true)}
-                className={`inline-flex items-center justify-center gap-2 rounded-2xl border px-7 py-4 text-base font-semibold transition-colors ${theme.border} ${theme.text} hover:border-[#D69A2D]/45 hover:text-[#D69A2D]`}
-              >
-                <Play size={18} /> Watch Demo
-              </button>
             </div>
             <div className={`mt-10 flex flex-wrap gap-x-6 gap-y-2 text-sm ${theme.faint}`}>
               <span className="flex items-center gap-2"><Shield size={15} className="text-[#D69A2D]" /> Tenant-aware processing</span>
@@ -411,29 +401,7 @@ export const LandingPage = ({ setView, isLightMode, setIsLightMode }) => {
         </div>
       </section>
 
-      <section className="relative z-10 px-6 py-28">
-        <div className={`mx-auto max-w-6xl rounded-[32px] border ${theme.surfaceSolid} p-6 shadow-2xl shadow-black/10 sm:p-10`}>
-          <FadeReveal className="mb-10 flex flex-col justify-between gap-5 md:flex-row md:items-end">
-            <div>
-              <p className="text-sm font-bold uppercase tracking-[0.24em] text-[#D69A2D]">Measured for scale</p>
-              <h2 className={`mt-4 max-w-2xl text-3xl font-semibold tracking-tight sm:text-5xl ${theme.text}`}>Fast, precise, and ready for enterprise workloads.</h2>
-            </div>
-            <p className={`max-w-sm text-sm leading-6 ${theme.muted}`}>Counters represent target product benchmarks for high-volume document understanding workflows.</p>
-          </FadeReveal>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {stats.map((stat, index) => (
-              <FadeReveal key={stat.label} delay={index * 0.05}>
-                <div className={`rounded-3xl border ${theme.border} p-6`}>
-                  <div className={`text-4xl font-semibold tracking-tight sm:text-5xl ${theme.text}`}>
-                    <AnimatedCounter target={stat.value} suffix={stat.suffix} />
-                  </div>
-                  <p className={`mt-4 text-sm leading-6 ${theme.muted}`}>{stat.label}</p>
-                </div>
-              </FadeReveal>
-            ))}
-          </div>
-        </div>
-      </section>
+    
 
       <section className="relative overflow-hidden px-6 py-32">
         <DotGridLayer theme={theme} opacity={0.95} />

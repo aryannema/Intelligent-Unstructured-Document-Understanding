@@ -1,13 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Archive,
-  ArrowLeft,
   BookOpen,
   BrainCircuit,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   FileBarChart,
   FileImage,
   FileText,
@@ -31,6 +28,9 @@ import {
   Sun,
   UploadCloud,
   X,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
 } from 'lucide-react';
 import { DotField } from './components/DotField';
 import { SpotlightCard } from './components/SpotlightCard';
@@ -61,6 +61,114 @@ const getFileIcon = (name) => {
 
 const shortName = (name) => (name.length > 24 ? `${name.slice(0, 16)}...${name.slice(-5)}` : name);
 
+const INGESTION_STAGES = ['Uploading', 'Parsing', 'OCR', 'Entity Extraction', 'Knowledge Graph Construction', 'Embedding Generation', 'Ready'];
+const RESPONSE_STEPS = ['Reading document...', 'Finding evidence...', 'Cross-referencing sources...', 'Building response...', 'Generating answer...'];
+
+const parseSseChunk = (chunk) => {
+  const events = [];
+  for (const block of chunk.split('\n\n')) {
+    if (!block.trim()) continue;
+    let event = 'message';
+    const dataLines = [];
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event: ')) event = line.substring(7).trim();
+      if (line.startsWith('data: ')) dataLines.push(line.substring(6).trim());
+    }
+    if (!dataLines.length) continue;
+    try {
+      events.push({ event, data: JSON.parse(dataLines.join('')) });
+    } catch {
+      // The next network chunk will complete partial SSE frames.
+    }
+  }
+  return events;
+};
+
+const normalizeSourceType = (source = {}) => {
+  const text = `${source.content_type || ''} ${source.title || ''} ${source.content || source.snippet || ''}`.toLowerCase();
+  if (/table|\|[-:\s|]+\|/.test(text)) return 'table';
+  if (source.metadata?.image_file || /chart|graph|figure|image|png|jpg|jpeg/.test(text)) return /chart|graph/.test(text) ? 'chart' : 'image';
+  return 'text';
+};
+
+const citationLabel = (source = {}) => {
+  const title = source.title || '';
+  const contentType = source.content_type || '';
+  if (source.page) return String(source.page).toLowerCase().includes('page') ? source.page : `Page ${source.page}`;
+  const tableMatch = title.match(/table\s*([\w.-]+)/i) || (source.content || source.snippet || '').match(/table\s*([\w.-]+)/i);
+  if (tableMatch) return `Table ${tableMatch[1]}`;
+  if (title) return title.length > 26 ? `${title.slice(0, 23)}...` : title;
+  if (source.sequence) return `Section ${source.sequence}`;
+  if (/financial|statement/i.test(`${title} ${contentType}`)) return 'Financial Statement';
+  if (/annual|report/i.test(`${title} ${source.source}`)) return 'Annual Report';
+  return source.source || source.marker || 'Source';
+};
+
+const cleanEvidenceText = (text = '') => text
+  .replace(/^\s*#+\s*/gm, '')
+  .replace(/\*\*(.*?)\*\*/g, '$1')
+  .replace(/\[S\d+\]/g, '')
+  .trim();
+
+const parseMarkdownTable = (text = '') => {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  const tableLines = lines.filter((line) => line.includes('|'));
+  if (tableLines.length < 2) return null;
+  const rows = tableLines
+    .filter((line) => !/^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(line))
+    .map((line) => line.replace(/^\||\|$/g, '').split('|').map((cell) => cleanEvidenceText(cell)));
+  if (rows.length < 2) return null;
+  return { headers: rows[0], rows: rows.slice(1) };
+};
+
+const confidenceLabel = (value) => {
+  const score = Number(value);
+  if (!Number.isFinite(score) || score < 0 || score > 1) return null;
+  return `${Math.round(score * 100)}%`;
+};
+
+const pageLabel = (page) => {
+  if (!page) return null;
+  return String(page).toLowerCase().includes('page') ? String(page) : `Page ${page}`;
+};
+
+const pageCountFromRange = (range) => {
+  if (!range) return null;
+  const [start, end] = String(range).split('-').map((value) => Number(value));
+  if (!Number.isFinite(start)) return null;
+  if (!Number.isFinite(end)) return start;
+  return Math.max(start, end);
+};
+
+const formatEvidenceBlocks = (text = '') => text
+  .split(/\n{2,}/)
+  .map((block) => block.trim())
+  .filter(Boolean)
+  .map((block) => {
+    const heading = block.match(/^(#{1,6})\s+(.+)$/);
+    return heading
+      ? { type: 'heading', text: cleanEvidenceText(heading[2]) }
+      : { type: 'paragraph', text: cleanEvidenceText(block) };
+  });
+
+const answerSections = (text = '') => {
+  const sections = ['Summary', 'Key Findings', 'Evidence', 'Sources'];
+  const found = {};
+  sections.forEach((section, idx) => {
+    const current = new RegExp(`${section}\\s*:?`, 'i');
+    const match = text.match(current);
+    if (!match) return;
+    const start = (match.index || 0) + match[0].length;
+    const nextMatches = sections.slice(idx + 1).map((next) => {
+      const nextMatch = text.slice(start).match(new RegExp(`${next}\\s*:?`, 'i'));
+      return nextMatch ? start + (nextMatch.index || 0) : null;
+    }).filter((value) => value !== null);
+    const end = nextMatches.length ? Math.min(...nextMatches) : text.length;
+    found[section] = text.slice(start, end).trim();
+  });
+  return Object.keys(found).length ? found : { Summary: text };
+};
+
 const IconButton = ({ title, children, className = '', style, ...props }) => (
   <button
     title={title}
@@ -86,7 +194,145 @@ const SidebarItem = ({ icon: Icon, label, collapsed, active, theme }) => (
   </button>
 );
 
-const WorkspaceGraph = ({ graphData, theme, compact = false }) => {
+const AnswerView = ({ text, theme }) => {
+  const sections = answerSections(text);
+  return (
+    <div className="space-y-4 text-left">
+      {Object.entries(sections).map(([heading, value]) => (
+        <section key={heading}>
+          <h3 className="mb-1 text-xs font-bold uppercase tracking-[0.16em]" style={{ color: theme.accent }}>{heading}</h3>
+          <div className="space-y-1">
+            {cleanEvidenceText(value).split('\n').filter(Boolean).map((line, index) => (
+              <p key={`${heading}-${index}`}>{line.replace(/^\s*[-*]\s*/, '')}</p>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+};
+
+const CitationButton = ({ citation, theme, onClick }) => (
+  <span className="group relative inline-flex">
+    <button
+      onClick={onClick}
+      className="rounded-full border px-3 py-1 text-xs font-semibold"
+      style={{ borderColor: `${theme.accent}35`, color: theme.accent, background: `${theme.accent}10` }}
+    >
+      {citation.label || citation.id}
+    </button>
+    <span
+      className="pointer-events-none absolute bottom-full left-0 z-20 mb-2 hidden w-64 rounded-2xl border p-3 text-left text-xs shadow-xl group-hover:block"
+      style={{ borderColor: theme.softBorder, background: theme.surface, color: theme.text }}
+    >
+      <span className="block font-semibold">{citation.title || citation.source || citation.id}</span>
+      <span className="mt-1 block" style={{ color: theme.secondary }}>
+        {[citation.source, pageLabel(citation.page), citation.title, citation.chunkId].filter(Boolean).join(' · ')}
+      </span>
+      <span className="mt-1 line-clamp-4 block leading-5" style={{ color: theme.secondary }}>{cleanEvidenceText(citation.snippet || citation.content || 'Preview unavailable.')}</span>
+    </span>
+  </span>
+);
+
+const SourceViewer = ({ citation, theme }) => {
+  const [zoom, setZoom] = useState(1);
+  if (!citation) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center text-center" style={{ color: theme.secondary }}>
+        <FileText size={34} className="mb-3 opacity-60" />
+        <p className="text-sm">Select a citation to inspect source evidence.</p>
+      </div>
+    );
+  }
+
+  const type = citation.type || normalizeSourceType(citation);
+  const content = citation.content || citation.snippet || '';
+  const table = type === 'table' ? parseMarkdownTable(content) : null;
+  const confidence = confidenceLabel(citation.confidence);
+  const metadata = [
+    ['Document', citation.source || citation.title],
+    ['Page Number', pageLabel(citation.page)],
+    ['Section Name', citation.title],
+    ['Chunk ID', citation.chunkId],
+    ['Confidence', confidence],
+    ['Type', type],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== '');
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-2xl border p-4" style={{ borderColor: theme.softBorder, background: theme.card }}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">{citation.title || citation.source || 'Extracted Source'}</p>
+            <p className="mt-1 text-xs" style={{ color: theme.secondary }}>{citation.label || citation.marker} evidence source</p>
+          </div>
+          {(type === 'image' || type === 'chart') && (
+            <div className="flex gap-1">
+              <IconButton title="Zoom out" onClick={() => setZoom((value) => Math.max(0.5, value - 0.2))} style={{ borderColor: theme.softBorder, color: theme.secondary }}><ZoomOut size={15} /></IconButton>
+              <IconButton title="Zoom in" onClick={() => setZoom((value) => Math.min(2.5, value + 0.2))} style={{ borderColor: theme.softBorder, color: theme.secondary }}><ZoomIn size={15} /></IconButton>
+            </div>
+          )}
+        </div>
+        <dl className="mt-3 grid grid-cols-2 gap-2">
+          {metadata.map(([key, value]) => (
+            <div key={key} className="rounded-xl border px-2.5 py-2" style={{ borderColor: theme.softBorder, background: theme.surface }}>
+              <dt className="text-[10px] font-bold uppercase tracking-[0.14em]" style={{ color: theme.secondary }}>{key}</dt>
+              <dd className="mt-1 truncate text-xs font-semibold">{String(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+
+      <div className="rounded-2xl border p-3" style={{ borderColor: theme.softBorder, background: theme.surface }}>
+        {table ? (
+          <div className="max-h-[520px] overflow-auto">
+            <table className="min-w-full border-collapse text-left text-xs">
+              <thead>
+                <tr>{table.headers.map((header) => <th key={header} className="sticky top-0 border-b px-2 py-2 font-semibold" style={{ borderColor: theme.softBorder, background: theme.surface }}>{header}</th>)}</tr>
+              </thead>
+              <tbody>
+                {table.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`} className="border-b px-2 py-2" style={{ borderColor: theme.softBorder, color: theme.secondary }}>{cell}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : type === 'image' && citation.metadata?.image_file ? (
+          <div className="overflow-auto">
+            <img src={`${API_BASE}/uploads/${citation.metadata.image_file}`} alt={citation.title || 'Source image'} style={{ transform: `scale(${zoom})`, transformOrigin: 'top left' }} />
+          </div>
+        ) : type === 'chart' ? (
+          <div className="space-y-3">
+            <div className="h-32 rounded-xl border p-3" style={{ borderColor: theme.softBorder }}>
+              <svg viewBox="0 0 240 100" className="h-full w-full">
+                {[34, 62, 44, 78, 55].map((height, index) => <rect key={index} x={18 + index * 42} y={90 - height} width="24" height={height} rx="3" fill={theme.accent} opacity={0.35 + index * 0.1} />)}
+              </svg>
+            </div>
+            <p className="text-sm leading-6" style={{ color: theme.secondary }}>{cleanEvidenceText(content)}</p>
+          </div>
+        ) : (
+          <div className="space-y-3 text-sm leading-7" style={{ color: theme.secondary }}>
+            {formatEvidenceBlocks(content).map((block, index) => (
+              block.type === 'heading'
+                ? <h3 key={index} className="text-sm font-semibold" style={{ color: theme.text }}>{block.text}</h3>
+                : <p key={index}>{block.text}</p>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const WorkspaceGraph = ({ graphData, theme }) => {
+  const [layout, setLayout] = useState('hierarchical');
+  const [query, setQuery] = useState('');
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [collapsed, setCollapsed] = useState(new Set());
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
   if (!graphData?.nodes?.length) {
     return (
       <div className="flex h-full flex-col items-center justify-center text-center" style={{ color: theme.secondary }}>
@@ -96,53 +342,150 @@ const WorkspaceGraph = ({ graphData, theme, compact = false }) => {
     );
   }
 
-  const size = compact ? 240 : 300;
-  const center = size / 2;
-  const radius = compact ? 76 : 100;
+  const width = 860;
+  const height = 620;
+  const typeOrder = ['organization', 'person', 'document', 'financial entity', 'location', 'event', 'entity', 'chunk', 'other'];
+  const visibleNodes = graphData.nodes.filter((node) => {
+    const haystack = `${node.label || ''} ${node.entity_type || ''} ${node.node_type || ''}`.toLowerCase();
+    if (query && !haystack.includes(query.toLowerCase())) return false;
+    return !collapsed.has(node.entity_type || node.node_type || 'other');
+  });
+  const visibleIds = new Set(visibleNodes.map((node) => node.node_id));
+  const visibleEdges = (graphData.edges || []).filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  const nodePositions = new Map();
+
+  if (layout === 'hierarchical') {
+    const groups = typeOrder.map((type) => visibleNodes.filter((node) => (node.entity_type || node.node_type || 'other').toLowerCase() === type)).filter(Boolean);
+    groups.forEach((nodes, col) => {
+      nodes.forEach((node, row) => {
+        nodePositions.set(node.node_id, {
+          x: 90 + col * 105,
+          y: 80 + row * Math.max(56, 430 / Math.max(nodes.length, 1)),
+        });
+      });
+    });
+  } else {
+    const centerX = width / 2;
+    const centerY = height / 2;
+    visibleNodes.forEach((node, i) => {
+      const ring = 105 + Math.floor(i / 12) * 82;
+      const angle = (i * 137.5 * Math.PI) / 180;
+      nodePositions.set(node.node_id, {
+        x: centerX + Math.cos(angle) * ring,
+        y: centerY + Math.sin(angle) * ring,
+      });
+    });
+  }
+
+  const nodeColor = (node) => {
+    const type = (node.entity_type || node.node_type || '').toLowerCase();
+    if (type.includes('organization')) return '#2563EB';
+    if (type.includes('person')) return '#059669';
+    if (type.includes('document') || type.includes('chunk')) return '#D97706';
+    if (type.includes('financial')) return '#7C3AED';
+    if (type.includes('location')) return '#0891B2';
+    if (type.includes('event')) return '#DC2626';
+    return theme.accent;
+  };
+
+  const groups = Array.from(new Set(graphData.nodes.map((node) => node.entity_type || node.node_type || 'other'))).filter(Boolean);
+  const connectedEdges = selectedNode ? (graphData.edges || []).filter((edge) => edge.source === selectedNode.node_id || edge.target === selectedNode.node_id) : [];
+  const connectedEntities = connectedEdges
+    .map((edge) => graphData.nodes.find((node) => node.node_id === (edge.source === selectedNode?.node_id ? edge.target : edge.source)))
+    .filter(Boolean);
+  const graphBody = (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border px-2 py-1.5" style={{ borderColor: theme.softBorder }}>
+          <Search size={15} style={{ color: theme.secondary }} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search node" className="min-w-0 flex-1 bg-transparent text-sm outline-none" style={{ color: theme.text }} />
+        </div>
+        {['hierarchical', 'force'].map((mode) => (
+          <button key={mode} onClick={() => setLayout(mode)} className="rounded-xl border px-3 py-2 text-xs font-semibold capitalize" style={{ borderColor: theme.softBorder, background: layout === mode ? `${theme.accent}16` : 'transparent', color: layout === mode ? theme.accent : theme.secondary }}>
+            {mode}
+          </button>
+        ))}
+        <IconButton title="Zoom out" onClick={() => setZoom((value) => Math.max(0.45, value - 0.15))} style={{ borderColor: theme.softBorder, color: theme.secondary }}><ZoomOut size={16} /></IconButton>
+        <IconButton title="Zoom in" onClick={() => setZoom((value) => Math.min(2.2, value + 0.15))} style={{ borderColor: theme.softBorder, color: theme.secondary }}><ZoomIn size={16} /></IconButton>
+        <IconButton title="Fit view" onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }} style={{ borderColor: theme.softBorder, color: theme.secondary }}><Maximize2 size={16} /></IconButton>
+        <IconButton title="Reset view" onClick={() => { setQuery(''); setZoom(1); setPan({ x: 0, y: 0 }); setCollapsed(new Set()); setSelectedNode(null); }} style={{ borderColor: theme.softBorder, color: theme.secondary }}><RotateCcw size={16} /></IconButton>
+        <IconButton title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => setIsFullscreen((value) => !value)} style={{ borderColor: theme.softBorder, color: theme.secondary }}><Maximize2 size={16} /></IconButton>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {groups.map((group) => (
+          <button
+            key={group}
+            onClick={() => setCollapsed((prev) => {
+              const next = new Set(prev);
+              if (next.has(group)) next.delete(group);
+              else next.add(group);
+              return next;
+            })}
+            className="rounded-full border px-2.5 py-1 text-[11px] font-semibold capitalize"
+            style={{ borderColor: theme.softBorder, color: collapsed.has(group) ? theme.secondary : theme.text, opacity: collapsed.has(group) ? 0.55 : 1 }}
+          >
+            {group}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border" style={{ borderColor: theme.softBorder, background: theme.surface }}>
+        <svg
+          className="h-full w-full cursor-grab"
+          viewBox={`0 0 ${width} ${height}`}
+          onWheel={(event) => {
+            event.preventDefault();
+            setZoom((value) => Math.max(0.45, Math.min(2.2, value + (event.deltaY > 0 ? -0.08 : 0.08))));
+          }}
+          onMouseMove={(event) => {
+            if (event.buttons !== 1) return;
+            setPan((value) => ({ x: value.x + event.movementX / zoom, y: value.y + event.movementY / zoom }));
+          }}
+        >
+          <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+            {visibleEdges.map((edge, i) => {
+              const source = nodePositions.get(edge.source);
+              const target = nodePositions.get(edge.target);
+              if (!source || !target) return null;
+              return <line key={`${edge.source}-${edge.target}-${i}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y} stroke={theme.accent} strokeOpacity="0.28" strokeWidth="1.5" />;
+            })}
+            {visibleNodes.map((node) => {
+              const pos = nodePositions.get(node.node_id) || { x: 0, y: 0 };
+              const label = node.label || node.node_id || 'Node';
+              const active = selectedNode?.node_id === node.node_id;
+              return (
+                <g key={node.node_id} onClick={() => setSelectedNode(node)} className="cursor-pointer">
+                  <circle cx={pos.x} cy={pos.y} r={active ? 15 : 11} fill={theme.card} stroke={nodeColor(node)} strokeWidth={active ? 3 : 2} />
+                  <text x={pos.x} y={pos.y + 28} fill={theme.text} fontSize="10" textAnchor="middle" fontWeight="700">{label.length > 22 ? `${label.slice(0, 22)}...` : label}</text>
+                  <text x={pos.x} y={pos.y + 42} fill={theme.secondary} fontSize="8" textAnchor="middle">{node.entity_type || node.node_type || 'entity'}</text>
+                </g>
+              );
+            })}
+          </g>
+        </svg>
+      </div>
+      {selectedNode && (
+        <div className="rounded-2xl border p-3" style={{ borderColor: theme.softBorder, background: theme.surface }}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold">{selectedNode.label || selectedNode.node_id}</p>
+              <p className="mt-1 text-xs capitalize" style={{ color: theme.secondary }}>{selectedNode.description || selectedNode.entity_type || selectedNode.node_type || 'entity'}</p>
+            </div>
+            <button onClick={() => setSelectedNode(null)} style={{ color: theme.secondary }}><X size={15} /></button>
+          </div>
+          {selectedNode.source_documents && <p className="mt-2 text-xs leading-5" style={{ color: theme.secondary }}>Related Sources: {Array.isArray(selectedNode.source_documents) ? selectedNode.source_documents.join(', ') : selectedNode.source_documents}</p>}
+          {connectedEntities.length > 0 && <p className="mt-2 text-xs leading-5" style={{ color: theme.secondary }}>Connected Entities: {connectedEntities.map((node) => node.label || node.node_id).slice(0, 8).join(', ')}</p>}
+        </div>
+      )}
+    </>
+  );
 
   return (
-    <svg className="h-full min-h-[240px] w-full" viewBox={`0 0 ${size} ${size}`}>
-      {graphData.edges?.map((edge, i) => {
-        const sourceIndex = graphData.nodes.findIndex((node) => node.node_id === edge.source);
-        const targetIndex = graphData.nodes.findIndex((node) => node.node_id === edge.target);
-        const getPos = (idx) => {
-          const safeIndex = idx === -1 ? 0 : idx;
-          const angle = (safeIndex / graphData.nodes.length) * 2 * Math.PI - Math.PI / 2;
-          return { x: center + radius * Math.cos(angle), y: center + radius * Math.sin(angle) };
-        };
-        const source = getPos(sourceIndex);
-        const target = getPos(targetIndex);
-        return (
-          <motion.line
-            key={`${edge.source}-${edge.target}-${i}`}
-            x1={source.x}
-            y1={source.y}
-            x2={target.x}
-            y2={target.y}
-            stroke={theme.accent}
-            strokeOpacity="0.34"
-            strokeWidth="1.2"
-            initial={{ pathLength: 0 }}
-            animate={{ pathLength: 1 }}
-            transition={{ duration: 0.7, delay: i * 0.04 }}
-          />
-        );
-      })}
-      {graphData.nodes.map((node, i) => {
-        const angle = (i / graphData.nodes.length) * 2 * Math.PI - Math.PI / 2;
-        const x = center + radius * Math.cos(angle);
-        const y = center + radius * Math.sin(angle);
-        const label = node.label || node.node_id || 'Node';
-        return (
-          <motion.g key={node.node_id || i} initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.08 * i }}>
-            <circle cx={x} cy={y} r={i === 0 ? 13 : 9} fill={theme.card} stroke={theme.accent} strokeWidth="1.4" />
-            <text x={x} y={y + 22} fill={theme.secondary} fontSize="7" textAnchor="middle" fontWeight="600">
-              {label.length > 18 ? `${label.slice(0, 18)}...` : label}
-            </text>
-          </motion.g>
-        );
-      })}
-    </svg>
+    <div
+      className={`flex h-full min-h-[520px] flex-col gap-3 ${isFullscreen ? 'fixed inset-4 z-50 rounded-3xl border p-4 shadow-2xl' : ''}`}
+      style={isFullscreen ? { borderColor: theme.border, background: theme.card } : undefined}
+    >
+      {graphBody}
+    </div>
   );
 };
 
@@ -156,6 +499,7 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
   const [docs, setDocs] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [processingDetailsOpen, setProcessingDetailsOpen] = useState({});
   const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('documind-left-collapsed') === 'true');
   const [rightCollapsed, setRightCollapsed] = useState(() => {
     const stored = localStorage.getItem('documind-right-collapsed');
@@ -201,32 +545,76 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
         id: docId,
         name: file.name,
         status: 'Uploading',
-        progress: 18,
+        stage: 'Uploading',
+        progress: 8,
+        stages: INGESTION_STAGES.map((stage, index) => ({ stage, state: index === 0 ? 'active' : 'pending' })),
         iconName: Icon.name,
       };
       setDocs((prev) => [newDoc, ...prev]);
-
-      const progressTimer = setInterval(() => {
-        setDocs((prev) => prev.map((doc) => (doc.id === docId && doc.status === 'Uploading' ? { ...doc, progress: Math.min((doc.progress || 18) + 12, 86) } : doc)));
-      }, 350);
 
       const formData = new FormData();
       formData.append('file', file);
 
       try {
-        const res = await fetch(`${API_BASE}/api/ingest`, {
+        const res = await fetch(`${API_BASE}/api/ingest/stream`, {
           method: 'POST',
           body: formData,
         });
-        clearInterval(progressTimer);
-        if (res.ok) {
-          setDocs((prev) => prev.map((doc) => (doc.id === docId ? { ...doc, status: 'Parsed', progress: 100 } : doc)));
-        } else {
+        if (!res.ok || !res.body) {
           const err = await res.json().catch(() => ({}));
           setDocs((prev) => prev.map((doc) => (doc.id === docId ? { ...doc, status: err.detail ? `Error: ${err.detail}` : 'Error', progress: 100 } : doc)));
+          continue;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let done = false;
+        while (!done) {
+          const { value, done: doneReading } = await reader.read();
+          done = doneReading;
+          if (!value) continue;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            for (const { event, data } of parseSseChunk(`${frame}\n\n`)) {
+              if (event === 'progress') {
+                const stageIndex = Math.max(0, INGESTION_STAGES.indexOf(data.stage));
+                setDocs((prev) => prev.map((doc) => (doc.id === docId ? {
+                  ...doc,
+                  status: data.stage,
+                  stage: data.stage,
+                  progress: data.progress || doc.progress,
+                  indexed: data.indexed ?? doc.indexed,
+                  entities: data.entities ?? doc.entities,
+                  edges: data.edges ?? doc.edges,
+                  pages: pageCountFromRange(data.page_range) ?? doc.pages,
+                  stages: INGESTION_STAGES.map((stage, index) => ({
+                    stage,
+                    state: index < stageIndex ? 'done' : index === stageIndex ? 'active' : 'pending',
+                  })),
+                } : doc)));
+              }
+              if (event === 'done') {
+                setDocs((prev) => prev.map((doc) => (doc.id === docId ? {
+                  ...doc,
+                  status: 'Ready',
+                  stage: 'Ready',
+                  progress: 100,
+                  chunks: data.chunk_count,
+                  nodes: data.node_count,
+                  edges: data.edge_count,
+                  stages: INGESTION_STAGES.map((stage) => ({ stage, state: 'done' })),
+                } : doc)));
+              }
+              if (event === 'error') {
+                setDocs((prev) => prev.map((doc) => (doc.id === docId ? { ...doc, status: `Error: ${data.message}`, progress: 100 } : doc)));
+              }
+            }
+          }
         }
       } catch (err) {
-        clearInterval(progressTimer);
         console.error(err);
         setDocs((prev) => prev.map((doc) => (doc.id === docId ? { ...doc, status: 'Error', progress: 100 } : doc)));
       }
@@ -241,6 +629,24 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
     setMessages((prev) => [...prev, { sender: 'user', text: query }, { sender: 'ai', text: '', status: 'Connecting to document intelligence...', citations: null }]);
     setInput('');
     setIsProcessing(true);
+    let hasAnswerStarted = false;
+    let loadingStep = 0;
+    const loadingTimer = window.setInterval(() => {
+      if (hasAnswerStarted) return;
+      loadingStep = Math.min(loadingStep + 1, RESPONSE_STEPS.length - 1);
+      setMessages((prev) => {
+        const next = [...prev];
+        if (next[messageIndex]?.status) {
+          next[messageIndex] = { ...next[messageIndex], status: RESPONSE_STEPS[loadingStep] };
+        }
+        return next;
+      });
+    }, 900);
+    setMessages((prev) => {
+      const next = [...prev];
+      next[messageIndex] = { ...next[messageIndex], status: RESPONSE_STEPS[0] };
+      return next;
+    });
 
     try {
       const res = await fetch(`${API_BASE}/api/chat`, {
@@ -274,12 +680,12 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
           try {
             const data = JSON.parse(dataStr);
             if (currentEvent === 'status') {
-              setMessages((prev) => {
-                const next = [...prev];
-                next[messageIndex] = { ...next[messageIndex], status: data.message };
-                return next;
-              });
+              // Keep the user-facing workflow steps stable; backend statuses are too implementation-specific.
             } else if (currentEvent === 'answer') {
+              if (!hasAnswerStarted) {
+                hasAnswerStarted = true;
+                window.clearInterval(loadingTimer);
+              }
               currentText += data.text;
               setMessages((prev) => {
                 const next = [...prev];
@@ -296,10 +702,18 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
               if (data.metadata?.sources) {
                 const mappedCitations = data.metadata.sources.map((source) => ({
                   id: source.marker,
-                  label: `[${source.marker}]`,
-                  type: 'text',
+                  label: citationLabel(source),
+                  type: normalizeSourceType(source),
                   title: source.title || source.source || 'Extracted Source',
                   snippet: source.snippet,
+                  content: source.content || source.snippet,
+                  source: source.source,
+                  page: source.page,
+                  confidence: source.rerank_score,
+                  metadata: source.metadata || {},
+                  sequence: source.sequence,
+                  marker: source.marker,
+                  chunkId: source.chunk_id,
                 }));
                 setMessages((prev) => {
                   const next = [...prev];
@@ -316,12 +730,14 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
       }
     } catch (err) {
       console.error(err);
+      window.clearInterval(loadingTimer);
       setMessages((prev) => {
         const next = [...prev];
         next[messageIndex] = { ...next[messageIndex], text: 'Failed to connect to backend.', status: null };
         return next;
       });
     } finally {
+      window.clearInterval(loadingTimer);
       setIsProcessing(false);
     }
   };
@@ -452,14 +868,46 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">{doc.name}</p>
                         <div className="mt-1 flex items-center gap-2 text-xs" style={{ color: theme.secondary }}>
-                          {doc.status === 'Parsed' ? <CheckCircle2 size={12} style={{ color: theme.accent }} /> : doc.status === 'Error' || doc.status?.startsWith('Error') ? <X size={12} /> : <Loader2 size={12} className="animate-spin" />}
+                          {doc.status === 'Ready' ? <CheckCircle2 size={12} style={{ color: theme.accent }} /> : doc.status === 'Error' || doc.status?.startsWith('Error') ? <X size={12} /> : <Loader2 size={12} className="animate-spin" />}
                           {doc.status}
                         </div>
                       </div>
                     </div>
-                    {doc.status === 'Uploading' && (
+                    {doc.status !== 'Ready' && !doc.status?.startsWith('Error') && (
                       <div className="mt-3 h-1 overflow-hidden rounded-full" style={{ background: `${theme.accent}18` }}>
                         <div className="h-full rounded-full transition-all" style={{ width: `${doc.progress || 0}%`, background: theme.accent }} />
+                      </div>
+                    )}
+                    {doc.status === 'Ready' ? (
+                      <div className="mt-3 flex items-center gap-2 text-xs font-semibold" style={{ color: theme.accent }}>
+                        <CheckCircle2 size={13} /> Ready
+                      </div>
+                    ) : null}
+                    {(doc.pages || doc.chunks || doc.nodes || doc.edges) && (
+                      <div className="mt-3 grid grid-cols-2 gap-1 text-[10px]" style={{ color: theme.secondary }}>
+                        <span>Pages: {doc.pages || 0}</span>
+                        <span>Chunks: {doc.indexed || doc.chunks || 0}</span>
+                        <span>Entities: {doc.entities || doc.nodes || 0}</span>
+                        <span>Relationships: {doc.edges || 0}</span>
+                      </div>
+                    )}
+                    {doc.stages?.length > 0 && doc.status === 'Ready' && (
+                      <button
+                        onClick={() => setProcessingDetailsOpen((prev) => ({ ...prev, [doc.id]: !prev[doc.id] }))}
+                        className="mt-3 text-[11px] font-semibold"
+                        style={{ color: theme.secondary }}
+                      >
+                        {processingDetailsOpen[doc.id] ? '▼' : '▶'} Processing Details
+                      </button>
+                    )}
+                    {doc.stages?.length > 0 && (doc.status !== 'Ready' || processingDetailsOpen[doc.id]) && (
+                      <div className="mt-3 space-y-1.5">
+                        {doc.stages.map((item) => (
+                          <div key={item.stage} className="flex items-center gap-2 text-[11px]" style={{ color: item.state === 'pending' ? theme.secondary : theme.text }}>
+                            {item.state === 'done' ? <CheckCircle2 size={11} style={{ color: theme.accent }} /> : item.state === 'active' ? <Loader2 size={11} className="animate-spin" style={{ color: theme.accent }} /> : <span className="h-2.5 w-2.5 rounded-full border" style={{ borderColor: theme.softBorder }} />}
+                            <span>{item.stage}</span>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -571,24 +1019,32 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
                           {msg.status ? (
                             <div className="flex items-center gap-2" style={{ color: theme.secondary }}>
                               <Loader2 size={16} className="animate-spin" style={{ color: theme.accent }} />
-                              {msg.status}
+                              <AnimatePresence mode="wait">
+                                <motion.span
+                                  key={msg.status}
+                                  initial={{ opacity: 0, y: 4 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  exit={{ opacity: 0, y: -4 }}
+                                  transition={{ duration: 0.18 }}
+                                >
+                                  {msg.status}
+                                </motion.span>
+                              </AnimatePresence>
                             </div>
-                          ) : msg.text}
+                          ) : msg.sender === 'ai' ? <AnswerView text={msg.text} theme={theme} /> : msg.text}
                           {msg.citations?.length > 0 && (
                             <div className="mt-4 flex flex-wrap gap-2 border-t pt-3" style={{ borderColor: theme.softBorder }}>
                               {msg.citations.map((citation) => (
-                                <button
+                                <CitationButton
                                   key={citation.id}
+                                  citation={citation}
+                                  theme={theme}
                                   onClick={() => {
                                     setActiveCitation(citation.id);
                                     setActiveTab('source');
                                     setRightCollapsed(false);
                                   }}
-                                  className="rounded-full border px-3 py-1 text-xs font-semibold"
-                                  style={{ borderColor: `${theme.accent}35`, color: theme.accent, background: `${theme.accent}10` }}
-                                >
-                                  {citation.label || citation.id}
-                                </button>
+                                />
                               ))}
                             </div>
                           )}
@@ -607,7 +1063,7 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
                     <span key={doc.id} className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium" style={{ borderColor: theme.softBorder, background: theme.surface, color: theme.text }}>
                       <span style={{ color: theme.accent }}>{renderDocIcon(doc.name)}</span>
                       {shortName(doc.name)}
-                      {doc.status === 'Uploading' && <Loader2 size={12} className="animate-spin" style={{ color: theme.accent }} />}
+                      {doc.status !== 'Ready' && !doc.status?.startsWith('Error') && <Loader2 size={12} className="animate-spin" style={{ color: theme.accent }} />}
                       <button onClick={() => setDocs((prev) => prev.filter((docItem) => docItem.id !== doc.id))} style={{ color: theme.secondary }}>
                         <X size={12} />
                       </button>
@@ -742,21 +1198,7 @@ export const DashboardWorkspace = ({ setView, session, isLightMode, setIsLightMo
               <AnimatePresence mode="wait">
                 {activeTab === 'source' && (
                   <motion.div key="source" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} className="h-full">
-                    {activeCitationData ? (
-                      <div className="rounded-3xl border p-4" style={{ borderColor: theme.softBorder, background: theme.card }}>
-                        <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em]" style={{ color: theme.accent }}>
-                          <FileText size={14} /> {activeCitationData.title || 'Extracted Source'}
-                        </div>
-                        <p className="border-l-2 pl-3 text-sm leading-7" style={{ borderColor: `${theme.accent}55`, color: theme.secondary }}>
-                          {activeCitationData.snippet || 'No snippet provided for this source.'}
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="flex h-full flex-col items-center justify-center text-center" style={{ color: theme.secondary }}>
-                        <FileText size={34} className="mb-3 opacity-60" />
-                        <p className="text-sm">Select a citation to inspect source evidence.</p>
-                      </div>
-                    )}
+                    <SourceViewer citation={activeCitationData} theme={theme} />
                   </motion.div>
                 )}
 
